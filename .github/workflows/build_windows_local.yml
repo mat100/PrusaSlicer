@@ -15,7 +15,7 @@ on:
 
 jobs:
   build_win:
-    runs-on: [self-hosted, windows, NB-MATEJ-P3590]
+    runs-on: [self-hosted, windows]
 
     env:
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
