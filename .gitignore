@@ -15,6 +15,7 @@ xs/assertlib*
 /src/TAGS
 /.vscode/
 build-linux/*
+build-default/
 deps/build*
 deps/build-linux/*
 **/.DS_Store
