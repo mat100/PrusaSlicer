@@ -3212,6 +3212,14 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("tool_ordering_optimization", coBool);
+    def->label = L("Optimize tool order between layers");
+    def->tooltip = L("If enabled, the tool order on each layer is optimized so that the last extruder "
+                     "used on the previous layer is the first extruder on the next layer, saving one "
+                     "tool change per layer. Disable this to keep a consistent tool order across all layers.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
     def = this->add("slice_closing_radius", coFloat);
     def->label = L("Slice gap closing radius");
     def->category = L("Advanced");
