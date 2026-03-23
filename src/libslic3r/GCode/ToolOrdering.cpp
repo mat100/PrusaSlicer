@@ -101,6 +101,8 @@ static double calc_max_layer_height(const PrintConfig &config, double max_object
 // (print.config().complete_objects is true).
 ToolOrdering::ToolOrdering(const PrintObject &object, unsigned int first_extruder, bool prime_multi_material)
 {
+    m_print_config_ptr = &object.print()->config();
+
     if (object.layers().empty())
         return;
 
@@ -381,13 +383,15 @@ void ToolOrdering::reorder_extruders(unsigned int last_extruder_id)
                 // Pop the "don't care" extruder, the "don't care" region will be merged with the next one.
                 lt.extruders.erase(lt.extruders.begin());
             // Reorder the extruders to start with the last one.
-            for (size_t i = 1; i < lt.extruders.size(); ++ i)
-                if (lt.extruders[i] == last_extruder_id) {
-                    // Move the last extruder to the front.
-                    memmove(lt.extruders.data() + 1, lt.extruders.data(), i * sizeof(unsigned int));
-                    lt.extruders.front() = last_extruder_id;
-                    break;
-                }
+            if (! m_print_config_ptr || m_print_config_ptr->tool_ordering_optimization) {
+                for (size_t i = 1; i < lt.extruders.size(); ++ i)
+                    if (lt.extruders[i] == last_extruder_id) {
+                        // Move the last extruder to the front.
+                        memmove(lt.extruders.data() + 1, lt.extruders.data(), i * sizeof(unsigned int));
+                        lt.extruders.front() = last_extruder_id;
+                        break;
+                    }
+            }
 
             // On first layer with wipe tower, prefer a soluble extruder
             // at the beginning, so it is not wiped on the first layer.
