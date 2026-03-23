@@ -30,7 +30,7 @@ jobs:
 
       - name: Detect Visual Studio
         id: detect-vs
-        shell: pwsh
+        shell: powershell -ExecutionPolicy Bypass -Command "& '{0}'"
         run: |
           $installPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $installPath) { Write-Error "No Visual Studio found"; exit 1 }
@@ -63,7 +63,7 @@ jobs:
           if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 
       - name: Assemble package
-        shell: pwsh
+        shell: powershell -ExecutionPolicy Bypass -Command "& '{0}'"
         run: |
           $pkg = "$env:GITHUB_WORKSPACE\package"
           if (Test-Path $pkg) { Remove-Item -Recurse -Force $pkg }
