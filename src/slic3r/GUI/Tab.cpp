@@ -1669,13 +1669,13 @@ void TabPrint::build()
         optgroup->append_single_option_line("wipe_tower_extra_spacing");
         optgroup->append_single_option_line("wipe_tower_extra_flow");
         optgroup->append_single_option_line("wipe_tower_no_sparse_layers");
-        optgroup->append_single_option_line("tool_ordering_optimization");
         optgroup->append_single_option_line("single_extruder_multi_material_priming");
 
         optgroup = page->new_optgroup(L("Advanced"));
         optgroup->append_single_option_line("interface_shells");
         optgroup->append_single_option_line("mmu_segmented_region_max_width");
         optgroup->append_single_option_line("mmu_segmented_region_interlocking_depth");
+        optgroup->append_single_option_line("tool_ordering_optimization");
 
         optgroup->append_single_option_line("interlocking_beam");
         optgroup->append_single_option_line("interlocking_beam_width");
