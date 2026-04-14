@@ -1,0 +1,348 @@
+name: Build Windows (self-hosted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Build configuration
+        default: Release
+        type: choice
+        options:
+          - Release
+          - RelWithDebInfo
+          - Debug
+      create_pdb:
+        description: Upload PDB artifacts
+        default: false
+        type: boolean
+      rebuild_deps:
+        description: Force rebuild dependencies
+        default: false
+        type: boolean
+
+concurrency:
+  # Serialize runs on the single self-hosted runner's shared workspace.
+  # cancel-in-progress is intentionally false: interrupting a build mid-link
+  # leaves object files and MSVC locks in an inconsistent state that breaks
+  # the next incremental build.
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_win:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 120
+
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      # Keep build memory budget under ~16 GB. PrusaSlicer TUs (Eigen / boost heavy)
+      # peak around 1.5-2 GB per cl.exe, so 8 parallel compilers fit comfortably.
+      # libslic3r is the dominant single project, so we favour translation-unit
+      # parallelism inside it over running multiple projects in parallel.
+      CMAKE_BUILD_PARALLEL_LEVEL: "1"
+      # Previously /MP1 forced single-threaded per project and was the main bottleneck.
+      CL: "/MP8"
+      BUILD_DIR: build
+      DEPS_BUILD_DIR: deps\build
+      DEPS_DESTDIR: deps\build\destdir
+      # CMAKE_GENERATOR / CMAKE_ARCH intentionally unset - let cmake pick
+      # whichever Visual Studio version is installed on the runner (currently
+      # VS 2026 = "Visual Studio 18 2026", but pinning it here would break
+      # when the runner upgrades).
+
+    steps:
+      # Manual git sync instead of actions/checkout@v4. The reason: actions/checkout
+      # rewrites every tracked file during the checkout, so its mtime becomes "now"
+      # and MSBuild thinks every TU changed => full rebuild every run. A plain
+      # git fetch + git reset only touches files whose content actually differs,
+      # preserving mtimes on the rest. That's what makes the next MSBuild run
+      # truly incremental.
+      - name: Sync repository (incremental-friendly)
+        shell: cmd
+        env:
+          GIT_TOKEN: ${{ github.token }}
+        run: |
+          setlocal EnableDelayedExpansion
+          rem Locate git.exe - not on PATH for cmd steps on this runner.
+          set "GIT=git"
+          where git >nul 2>&1
+          if errorlevel 1 (
+            if exist "C:\Program Files\Git\cmd\git.exe" set "GIT=C:\Program Files\Git\cmd\git.exe"
+            if exist "C:\Program Files\Git\bin\git.exe" set "GIT=C:\Program Files\Git\bin\git.exe"
+          )
+          echo Using git: !GIT!
+          set "REPO_URL=https://x-access-token:%GIT_TOKEN%@github.com/${{ github.repository }}.git"
+          if not exist .git (
+            echo Initializing git in existing workspace [preserves build artifacts]...
+            "!GIT!" init
+            if errorlevel 1 exit /b 1
+            "!GIT!" remote add origin "!REPO_URL!"
+            if errorlevel 1 exit /b 1
+          ) else (
+            echo Updating existing repo...
+            "!GIT!" remote set-url origin "!REPO_URL!"
+          )
+          "!GIT!" fetch --force --prune origin
+          if errorlevel 1 exit /b 1
+          rem Reset to the exact revision that triggered the workflow. Git only
+          rem rewrites files whose content differs between the index and target,
+          rem so mtimes on unchanged files stay put and MSBuild can skip them.
+          "!GIT!" -c advice.detachedHead=false reset --hard ${{ github.sha }}
+          if errorlevel 1 exit /b 1
+          rem Scrub the auth token from the remote URL so it isn't persisted on disk.
+          "!GIT!" remote set-url origin https://github.com/${{ github.repository }}.git
+          endlocal
+
+      - name: Detect Visual Studio
+        id: detect-vs
+        shell: powershell -ExecutionPolicy Bypass -Command "& '{0}'"
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "vswhere.exe not found at $vswhere"
+            exit 1
+          }
+          $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installPath) {
+            Write-Error "No suitable Visual Studio installation found"
+            exit 1
+          }
+          $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) {
+            Write-Error "vcvars64.bat not found at $vcvars"
+            exit 1
+          }
+          $msbuild = Join-Path $installPath "MSBuild\Current\Bin\MSBuild.exe"
+          "install_path=$installPath" >> $env:GITHUB_OUTPUT
+          "vcvars=$vcvars" >> $env:GITHUB_OUTPUT
+          "msbuild=$msbuild" >> $env:GITHUB_OUTPUT
+
+      - name: Print tool versions
+        shell: cmd
+        run: |
+          call "${{ steps.detect-vs.outputs.vcvars }}"
+          echo ==== Tool versions ====
+          cmake --version
+          where cl
+          cl
+          if exist "${{ steps.detect-vs.outputs.msbuild }}" (
+            "${{ steps.detect-vs.outputs.msbuild }}" -version
+          )
+
+      - name: Check dependency cache status
+        id: deps-cache
+        shell: powershell -ExecutionPolicy Bypass -Command "& '{0}'"
+        run: |
+          # Cache key: hash of the commit that last touched deps/ + build config + VS install.
+          # Intentionally does NOT include github.sha - otherwise every commit (even to src/)
+          # would invalidate the deps cache. We also do not walk deps/build/ because its
+          # contents (ExternalProject stamps, tarballs) change on every build.
+          $ErrorActionPreference = 'Stop'
+          Set-Location -LiteralPath $env:GITHUB_WORKSPACE
+          $gitCmd = Get-Command git.exe -ErrorAction SilentlyContinue
+          $git = if ($gitCmd) { $gitCmd.Source } else { $null }
+          if (-not $git) {
+            foreach ($p in @(
+              "C:\Program Files\Git\cmd\git.exe",
+              "C:\Program Files\Git\bin\git.exe"
+            )) { if (Test-Path $p) { $git = $p; break } }
+          }
+          if (-not $git) { Write-Error "git.exe not found"; exit 1 }
+
+          # Last commit that modified anything under deps/ - stable cache key.
+          $depsCommit = (& $git log -1 --format=%H -- deps 2>$null) | Out-String
+          $depsCommit = $depsCommit.Trim()
+          if (-not $depsCommit) { $depsCommit = "noop" }
+
+          $hashInput = @(
+            "deps_commit=$depsCommit",
+            "config=${{ inputs.config }}",
+            "vs=${{ steps.detect-vs.outputs.install_path }}"
+          ) -join '|'
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($hashInput)
+          $hash = [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+
+          $stampPath = Join-Path $env:GITHUB_WORKSPACE "${env:DEPS_DESTDIR}\.build-stamp.txt"
+          $rebuild = "true"
+          if ("${{ inputs.rebuild_deps }}" -eq "true") {
+            Write-Host "Forced dependency rebuild requested."
+          } elseif (Test-Path $stampPath) {
+            $existing = (Get-Content $stampPath -Raw).Trim()
+            if ($existing -eq $hash) {
+              $rebuild = "false"
+              Write-Host "Dependency cache hit (stamp matches $hash)."
+            } else {
+              Write-Host "Dependency cache miss: stored=$existing expected=$hash"
+            }
+          } else {
+            Write-Host "No dependency stamp present - first build."
+          }
+          "stamp_path=$stampPath" >> $env:GITHUB_OUTPUT
+          "stamp_value=$hash" >> $env:GITHUB_OUTPUT
+          "rebuild=$rebuild" >> $env:GITHUB_OUTPUT
+
+      - name: Build dependencies
+        if: steps.deps-cache.outputs.rebuild == 'true'
+        shell: cmd
+        env:
+          # Deps include template-heavy libs (CGAL, OpenVDB, Boost) that peak
+          # 3-4 GB per cl.exe, and some deps run their own internal parallelism
+          # on top. /MP2 keeps peak memory near 6-8 GB with comfortable headroom
+          # so the runner doesn't swap and appear to hang.
+          CL: "/MP2"
+        run: |
+          call "${{ steps.detect-vs.outputs.vcvars }}"
+          rem On explicit rebuild_deps=true, scrub the whole deps/build tree
+          rem (stamps, downloads, destdir) to guarantee a clean rebuild - mixed
+          rem leftover state from a compiler upgrade can otherwise leave finder
+          rem modules pointing at files that no longer exist.
+          if /i "${{ inputs.rebuild_deps }}"=="true" (
+            if exist "%GITHUB_WORKSPACE%\deps\build" (
+              echo Forced rebuild: wiping deps\build entirely...
+              rmdir /s /q "%GITHUB_WORKSPACE%\deps\build"
+            )
+          )
+          if not exist "%GITHUB_WORKSPACE%\deps\build" mkdir "%GITHUB_WORKSPACE%\deps\build"
+          cd /d "%GITHUB_WORKSPACE%\deps\build"
+          cmake .. ^
+            -DDESTDIR="%GITHUB_WORKSPACE%\%DEPS_DESTDIR%" ^
+            -DDEP_DEBUG=${{ inputs.config == 'Debug' && 'ON' || 'OFF' }}
+          if errorlevel 1 exit /b %errorlevel%
+          cmake --build . --config ${{ inputs.config }}
+          if errorlevel 1 exit /b %errorlevel%
+
+      - name: Write dependency cache stamp
+        if: steps.deps-cache.outputs.rebuild == 'true'
+        shell: powershell -ExecutionPolicy Bypass -Command "& '{0}'"
+        run: |
+          $stampPath = "${{ steps.deps-cache.outputs.stamp_path }}"
+          $stampDir = Split-Path $stampPath -Parent
+          if (-not (Test-Path $stampDir)) {
+            New-Item -ItemType Directory -Path $stampDir -Force | Out-Null
+          }
+          Set-Content -Path $stampPath -Value "${{ steps.deps-cache.outputs.stamp_value }}"
+
+      - name: Reuse cached dependencies
+        if: steps.deps-cache.outputs.rebuild != 'true'
+        shell: powershell -ExecutionPolicy Bypass -Command "& '{0}'"
+        run: |
+          Write-Host "Dependencies unchanged, reusing cached build in ${env:DEPS_DESTDIR}"
+
+      - name: Invalidate PrusaSlicer build dir on deps change
+        # If the dependencies were just rebuilt (different ABI, library paths,
+        # or compiler version) the existing build/ CMake cache is stale and
+        # can resolve targets like openvdb to the wrong files. Nuke it here so
+        # Configure PrusaSlicer starts fresh. When deps cache hits we leave
+        # build/ alone - that's the whole point of the incremental pipeline.
+        if: steps.deps-cache.outputs.rebuild == 'true'
+        shell: cmd
+        run: |
+          if exist "%GITHUB_WORKSPACE%\%BUILD_DIR%" (
+            echo Cleaning stale build/ after dependency rebuild...
+            rmdir /s /q "%GITHUB_WORKSPACE%\%BUILD_DIR%"
+          )
+
+      - name: Configure PrusaSlicer
+        shell: cmd
+        run: |
+          call "${{ steps.detect-vs.outputs.vcvars }}"
+          if not exist "%GITHUB_WORKSPACE%\%BUILD_DIR%" mkdir "%GITHUB_WORKSPACE%\%BUILD_DIR%"
+          cd /d "%GITHUB_WORKSPACE%\%BUILD_DIR%"
+          rem CMAKE_CONFIGURATION_TYPES must match the single configuration we
+          rem built deps in; otherwise PrusaSlicer's FindOpenVDB.cmake assumes
+          rem Debug is also needed (because it's in the default multi-config
+          rem list) and fails to locate the Debug library that was never built.
+          cmake .. ^
+            -DCMAKE_CONFIGURATION_TYPES=${{ inputs.config }} ^
+            -DCMAKE_PREFIX_PATH="%GITHUB_WORKSPACE%\%DEPS_DESTDIR%\usr\local"
+          if errorlevel 1 exit /b %errorlevel%
+
+      - name: Build PrusaSlicer
+        shell: cmd
+        run: |
+          call "${{ steps.detect-vs.outputs.vcvars }}"
+          cd /d "%GITHUB_WORKSPACE%\%BUILD_DIR%"
+          rem Build the default target set (effectively "all"). Previously we
+          rem scoped this to --target PrusaSlicer to skip unit tests, but that
+          rem target is just the DLL on Windows - the user-facing wrappers
+          rem (prusa-slicer.exe / console / gcodeviewer) and the runtime-loaded
+          rem OCCTWrapper.dll were quietly dropped. Building all targets costs
+          rem only a few extra minutes and guarantees the artifact is complete.
+          cmake --build . --config ${{ inputs.config }}
+          if errorlevel 1 exit /b %errorlevel%
+
+      - name: Assemble package
+        shell: powershell -ExecutionPolicy Bypass -Command "& '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg = Join-Path $env:GITHUB_WORKSPACE "package"
+          if (Test-Path $pkg) {
+            Remove-Item -Recurse -Force $pkg
+          }
+          New-Item -ItemType Directory -Path $pkg | Out-Null
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE $env:BUILD_DIR
+
+          $installSucceeded = $true
+          try {
+            Push-Location $buildDir
+            & cmake --install . --config "${{ inputs.config }}" --prefix $pkg
+            if ($LASTEXITCODE -ne 0) { $installSucceeded = $false }
+          } catch {
+            $installSucceeded = $false
+          } finally {
+            Pop-Location
+          }
+          if (-not $installSucceeded) {
+            Write-Host "cmake --install not available for this project layout, using manual copy fallback."
+            $fallback = Join-Path $buildDir "src\${{ inputs.config }}"
+            if (-not (Test-Path $fallback)) {
+              Write-Error "Fallback packaging path not found: $fallback"
+              exit 1
+            }
+            Copy-Item -Recurse -Force "$fallback\*" $pkg
+          }
+
+          $candidateResDirs = @()
+          if ($env:RUNNER_RESOURCES_DIR) { $candidateResDirs += $env:RUNNER_RESOURCES_DIR }
+          if ($env:RUNNER_TOOL_CACHE) {
+            $candidateResDirs += (Join-Path (Split-Path $env:RUNNER_TOOL_CACHE) "resources")
+          }
+          $candidateResDirs += (Join-Path $env:USERPROFILE "actions-runner\resources")
+          $resDir = $candidateResDirs | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if ($resDir) {
+            Write-Host "Copying resources from $resDir"
+            Copy-Item -Recurse -Force "$resDir\*" $pkg
+          } else {
+            Write-Host "No resources directory found, skipping resource copy."
+          }
+
+          Get-ChildItem -Path $pkg -Include *.pdb,*.exp,*.lib -File -Recurse -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+
+          Write-Host ""
+          Write-Host "==== Package top-level contents ($pkg) ===="
+          Get-ChildItem -Path $pkg | Sort-Object Name | ForEach-Object {
+            $size = if ($_.PSIsContainer) { "<DIR>" } else { "$($_.Length)" }
+            Write-Host ("  {0,-40} {1}" -f $_.Name, $size)
+          }
+          Write-Host ""
+          Write-Host "==== .exe files anywhere in package ===="
+          Get-ChildItem -Path $pkg -Filter *.exe -File -Recurse | ForEach-Object {
+            Write-Host ("  {0}" -f $_.FullName.Substring($pkg.Length + 1))
+          }
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrusaSlicer-win64-${{ inputs.config }}
+          path: package/
+          if-no-files-found: error
+
+      - name: Upload PDB
+        if: inputs.create_pdb
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrusaSlicer-PDB-${{ inputs.config }}
+          path: build/src/${{ inputs.config }}/*.pdb
+          if-no-files-found: warn
