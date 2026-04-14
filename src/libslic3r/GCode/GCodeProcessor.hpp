@@ -185,6 +185,7 @@ namespace Slic3r {
             Color_Change,
             Pause_Print,
             Custom_Code,
+            Predictive_Temperature,
             First_Line_M73_Placeholder,
             Last_Line_M73_Placeholder,
             Estimated_Printing_Time_Placeholder
@@ -527,6 +528,9 @@ namespace Slic3r {
         ExtruderTemps m_extruder_temps;
         ExtruderTemps m_extruder_temps_config;
         ExtruderTemps m_extruder_temps_first_layer_config;
+        // Predictive nozzle temperature override for preview display.
+        // When > 0, overrides m_extruder_temps in store_move_vertex(); reset after use.
+        float m_predictive_temp { -1.f };
         bool  m_is_XL_printer = false;
         float m_parking_position;
         float m_extra_loading_move;

@@ -60,6 +60,7 @@ const std::vector<std::string> GCodeProcessor::Reserved_Tags = {
     "COLOR_CHANGE",
     "PAUSE_PRINT",
     "CUSTOM_GCODE",
+    "_PREDICTIVE_TEMP:",
     "_GP_FIRST_LINE_M73_PLACEHOLDER",
     "_GP_LAST_LINE_M73_PLACEHOLDER",
     "_GP_ESTIMATED_PRINTING_TIME_PLACEHOLDER"
@@ -1927,6 +1928,13 @@ void GCodeProcessor::process_tags(const std::string_view comment, bool producers
                 BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid value for Width (" << comment << ").";
             return;
         }
+    }
+
+    // predictive nozzle temperature tag
+    if (boost::starts_with(comment, reserved_tag(ETags::Predictive_Temperature))) {
+        if (!parse_number(comment.substr(reserved_tag(ETags::Predictive_Temperature).size()), m_predictive_temp))
+            BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid value for Predictive_Temperature (" << comment << ").";
+        return;
     }
 
     // color change tag
@@ -4548,11 +4556,15 @@ void GCodeProcessor::store_move_vertex(EMoveType type, bool internal_only)
         m_height,
         m_mm3_per_mm,
         m_fan_speed,
-        m_extruder_temps[m_extruder_id],
+        (m_predictive_temp > 0.f) ? m_predictive_temp : m_extruder_temps[m_extruder_id],
         { 0.0f, 0.0f }, // time
         std::max<unsigned int>(1, m_layer_id) - 1,
         internal_only
     });
+
+    // Reset predictive temperature override after it has been consumed.
+    if (m_predictive_temp > 0.f)
+        m_predictive_temp = -1.f;
 
     // stores stop time placeholders for later use
     if (type == EMoveType::Color_change || type == EMoveType::Pause_Print) {

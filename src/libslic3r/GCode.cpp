@@ -1172,6 +1172,8 @@ void GCodeGenerator::_do_export(Print& print, GCodeOutputStream &file, Thumbnail
 
     m_cooling_buffer = make_unique<CoolingBuffer>(*this);
     m_cooling_buffer->set_current_extruder(initial_extruder_id);
+    m_predictive_temp_buffer = make_unique<PredictiveTemperatureBuffer>(*this);
+    m_predictive_temp_buffer->set_current_extruder(initial_extruder_id);
 
     // Emit machine envelope limits for the Marlin firmware.
     this->print_machine_envelope(file, print);
@@ -1317,6 +1319,8 @@ void GCodeGenerator::_do_export(Print& print, GCodeOutputStream &file, Thumbnail
             // Reset the cooling buffer internal state (the current position, feed rate, accelerations).
             m_cooling_buffer->reset(this->writer().get_position());
             m_cooling_buffer->set_current_extruder(initial_extruder_id);
+            m_predictive_temp_buffer->reset(this->writer().get_position());
+            m_predictive_temp_buffer->set_current_extruder(initial_extruder_id);
             // Process all layers of a single object instance (sequential mode) with a parallel pipeline:
             // Generate G-code, run the filters (vase mode, cooling buffer), run the G-code analyser
             // and export G-code into file.
@@ -1386,6 +1390,7 @@ void GCodeGenerator::_do_export(Print& print, GCodeOutputStream &file, Thumbnail
                 // Because CoolingBuffer doesn't process the priming of extruders, set the current extruder
                 // to the actual first printing extruder (that is also the last primed extruder).
                 m_cooling_buffer->set_current_extruder(first_printing_extruder_after_priming);
+                m_predictive_temp_buffer->set_current_extruder(first_printing_extruder_after_priming);
             }
             print.throw_if_canceled();
         }
@@ -1582,12 +1587,16 @@ void GCodeGenerator::process_layers(
         [pressure_equalizer = this->m_pressure_equalizer.get()](LayerResult in) -> LayerResult {
             return pressure_equalizer->process_layer(std::move(in));
         });
-    const auto cooling = tbb::make_filter<LayerResult, std::string>(slic3r_tbb_filtermode::serial_in_order,
-        [cooling_buffer = this->m_cooling_buffer.get()](LayerResult in) -> std::string {
+    const auto cooling = tbb::make_filter<LayerResult, std::pair<std::string, std::size_t>>(slic3r_tbb_filtermode::serial_in_order,
+        [cooling_buffer = this->m_cooling_buffer.get()](LayerResult in) -> std::pair<std::string, std::size_t> {
              if (in.nop_layer_result)
-                return in.gcode;
+                return { in.gcode, in.layer_id };
 
-             return cooling_buffer->process_layer(std::move(in.gcode), in.layer_id, in.cooling_buffer_flush);
+             return { cooling_buffer->process_layer(std::move(in.gcode), in.layer_id, in.cooling_buffer_flush), in.layer_id };
+        });
+    const auto predictive_temp = tbb::make_filter<std::pair<std::string, std::size_t>, std::string>(slic3r_tbb_filtermode::serial_in_order,
+        [predictive_buffer = this->m_predictive_temp_buffer.get()](std::pair<std::string, std::size_t> in) -> std::string {
+            return predictive_buffer->process_layer(std::move(in.first), in.second, false);
         });
     const auto find_replace = tbb::make_filter<std::string, std::string>(slic3r_tbb_filtermode::serial_in_order,
         [find_replace = this->m_find_replace.get()](std::string s) -> std::string {
@@ -1603,7 +1612,7 @@ void GCodeGenerator::process_layers(
     if (m_pressure_equalizer)
         pipeline_to_layerresult = pipeline_to_layerresult & pressure_equalizer;
 
-    tbb::filter<LayerResult, std::string> pipeline_to_string = cooling;
+    tbb::filter<LayerResult, std::string> pipeline_to_string = cooling & predictive_temp;
     if (m_find_replace)
         pipeline_to_string = pipeline_to_string & find_replace;
 
@@ -1613,6 +1622,13 @@ void GCodeGenerator::process_layers(
     // The pipeline elements are joined using const references, thus no copying is performed.
     output_stream.find_replace_supress();
     tbb::parallel_pipeline(12, pipeline_to_layerresult & pipeline_to_string & output);
+    // Flush the one-layer-behind buffer of the predictive temperature filter.
+    {
+        std::string pending = m_predictive_temp_buffer->flush_pending();
+        if (m_find_replace)
+            pending = m_find_replace->process_layer(std::move(pending));
+        output_stream.write(pending);
+    }
     output_stream.find_replace_enable();
 }
 
@@ -1676,11 +1692,15 @@ void GCodeGenerator::process_layers(
         [pressure_equalizer = this->m_pressure_equalizer.get()](LayerResult in) -> LayerResult {
              return pressure_equalizer->process_layer(std::move(in));
         });
-    const auto cooling = tbb::make_filter<LayerResult, std::string>(slic3r_tbb_filtermode::serial_in_order,
-        [cooling_buffer = this->m_cooling_buffer.get()](LayerResult in)->std::string {
+    const auto cooling = tbb::make_filter<LayerResult, std::pair<std::string, std::size_t>>(slic3r_tbb_filtermode::serial_in_order,
+        [cooling_buffer = this->m_cooling_buffer.get()](LayerResult in) -> std::pair<std::string, std::size_t> {
             if (in.nop_layer_result)
-                return in.gcode;
-            return cooling_buffer->process_layer(std::move(in.gcode), in.layer_id, in.cooling_buffer_flush);
+                return { in.gcode, in.layer_id };
+            return { cooling_buffer->process_layer(std::move(in.gcode), in.layer_id, in.cooling_buffer_flush), in.layer_id };
+        });
+    const auto predictive_temp = tbb::make_filter<std::pair<std::string, std::size_t>, std::string>(slic3r_tbb_filtermode::serial_in_order,
+        [predictive_buffer = this->m_predictive_temp_buffer.get()](std::pair<std::string, std::size_t> in) -> std::string {
+            return predictive_buffer->process_layer(std::move(in.first), in.second, false);
         });
     const auto find_replace = tbb::make_filter<std::string, std::string>(slic3r_tbb_filtermode::serial_in_order,
         [find_replace = this->m_find_replace.get()](std::string s) -> std::string {
@@ -1696,7 +1716,7 @@ void GCodeGenerator::process_layers(
     if (m_pressure_equalizer)
         pipeline_to_layerresult = pipeline_to_layerresult & pressure_equalizer;
 
-    tbb::filter<LayerResult, std::string> pipeline_to_string = cooling;
+    tbb::filter<LayerResult, std::string> pipeline_to_string = cooling & predictive_temp;
     if (m_find_replace)
         pipeline_to_string = pipeline_to_string & find_replace;
 
@@ -1706,6 +1726,13 @@ void GCodeGenerator::process_layers(
     // The pipeline elements are joined using const references, thus no copying is performed.
     output_stream.find_replace_supress();
     tbb::parallel_pipeline(12, pipeline_to_layerresult & pipeline_to_string & output);
+    // Flush the one-layer-behind buffer of the predictive temperature filter.
+    {
+        std::string pending = m_predictive_temp_buffer->flush_pending();
+        if (m_find_replace)
+            pending = m_find_replace->process_layer(std::move(pending));
+        output_stream.write(pending);
+    }
     output_stream.find_replace_enable();
 }
 

@@ -27,6 +27,7 @@
 #include "Geometry/ArcWelder.hpp"
 #include "libslic3r/GCode/AvoidCrossingPerimeters.hpp"
 #include "libslic3r/GCode/CoolingBuffer.hpp"
+#include "libslic3r/GCode/PredictiveTemperatureBuffer.hpp"
 #include "libslic3r/GCode/FindReplace.hpp"
 #include "libslic3r/GCode/GCodeWriter.hpp"
 #include "libslic3r/GCode/LabelObjects.hpp"
@@ -449,6 +450,7 @@ private:
 
     // This needs to be populated during the layer processing!
     std::unique_ptr<CoolingBuffer>      m_cooling_buffer;
+    std::unique_ptr<PredictiveTemperatureBuffer> m_predictive_temp_buffer;
     std::unique_ptr<SpiralVase>         m_spiral_vase;
     std::unique_ptr<GCodeFindReplace>   m_find_replace;
     std::unique_ptr<PressureEqualizer>  m_pressure_equalizer;

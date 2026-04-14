@@ -1253,6 +1253,95 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionStrings { "" });
 
+    def = this->add("nozzle_heating_speed", coFloats);
+    def->label = L("Nozzle heating speed");
+    def->category = L("Predictive temperature");
+    def->tooltip = L("Rate at which the hotend heats up, in degrees per second. "
+                     "Used by the predictive temperature algorithm to compute how far "
+                     "ahead to issue M104 commands before hotter extrusions.");
+    def->sidetext = L("°C/s");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloats { 5.0 });
+
+    def = this->add("nozzle_cooling_speed", coFloats);
+    def->label = L("Nozzle cooling speed");
+    def->category = L("Predictive temperature");
+    def->tooltip = L("Rate at which the hotend cools down, in degrees per second. "
+                     "Used by the predictive temperature algorithm to compute how far "
+                     "ahead to issue M104 commands before cooler extrusions. Cooling is "
+                     "typically slower than heating because it relies on passive dissipation.");
+    def->sidetext = L("°C/s");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloats { 3.0 });
+
+    def = this->add("filament_heat_transfer_coeff", coFloats);
+    def->label = L("Heat transfer coefficient to filament");
+    def->category = L("Predictive temperature");
+    def->tooltip = L("How many extra °C the nozzle setpoint is increased per mm³/s of volumetric flow "
+                     "to compensate for heat taken away by the filament. A higher value means the "
+                     "nozzle has to be hotter at high flow rates. Set to 0 to disable flow-based "
+                     "compensation (only feature-type offsets remain active).");
+    def->sidetext = L("°C per mm³/s");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloats { 0.4 });
+
+    def = this->add("filament_temp_clamp_min", coInts);
+    def->label = L("Minimum predicted nozzle temperature");
+    def->category = L("Predictive temperature");
+    def->tooltip = L("Lower safety clamp for the predictive nozzle temperature. The predicted "
+                     "setpoint will never be lower than this value.");
+    def->sidetext = L("°C");
+    def->min = 0;
+    def->max = max_temp;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInts { 180 });
+
+    def = this->add("filament_temp_clamp_max", coInts);
+    def->label = L("Maximum predicted nozzle temperature");
+    def->category = L("Predictive temperature");
+    def->tooltip = L("Upper safety clamp for the predictive nozzle temperature. The predicted "
+                     "setpoint will never exceed this value.");
+    def->sidetext = L("°C");
+    def->min = 0;
+    def->max = max_temp;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInts { 260 });
+
+    def = this->add("filament_temp_offset_bridge", coInts);
+    def->label = L("Bridge temperature offset");
+    def->category = L("Predictive temperature");
+    def->tooltip = L("Temperature offset applied on top of the base temperature when printing bridges.");
+    def->sidetext = L("°C");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInts { -5 });
+
+    def = this->add("filament_temp_offset_overhang", coInts);
+    def->label = L("Overhang temperature offset");
+    def->category = L("Predictive temperature");
+    def->tooltip = L("Temperature offset applied on top of the base temperature when printing overhanging perimeters.");
+    def->sidetext = L("°C");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInts { -3 });
+
+    def = this->add("filament_temp_offset_external_perimeter", coInts);
+    def->label = L("External perimeter temperature offset");
+    def->category = L("Predictive temperature");
+    def->tooltip = L("Temperature offset applied on top of the base temperature when printing external perimeters.");
+    def->sidetext = L("°C");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInts { 0 });
+
+    def = this->add("filament_temp_offset_infill", coInts);
+    def->label = L("Infill temperature offset");
+    def->category = L("Predictive temperature");
+    def->tooltip = L("Temperature offset applied on top of the base temperature when printing infill.");
+    def->sidetext = L("°C");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInts { 0 });
+
     def = this->add("filament_max_volumetric_speed", coFloats);
     def->label = L("Max volumetric speed");
     def->tooltip = L("Maximum volumetric speed allowed for this filament. Limits the maximum volumetric "
@@ -3212,6 +3301,35 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("tool_ordering_optimization", coBool);
+    def->label = L("Optimize tool order between layers");
+    def->tooltip = L("If enabled, the tool order on each layer is optimized so that the last extruder "
+                     "used on the previous layer is the first extruder on the next layer, saving one "
+                     "tool change per layer. Disable this to keep a consistent tool order across all layers.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("enable_predictive_nozzle_temperature", coBool);
+    def->label = L("Enable predictive nozzle temperature");
+    def->category = L("Advanced");
+    def->tooltip = L("If enabled, the nozzle temperature is dynamically adjusted by inserting M104 "
+                     "commands based on a physical thermal model of the nozzle. The setpoint is "
+                     "computed from the volumetric flow, the feature type and the thermal constants "
+                     "configured per filament. Clamped by the per-filament min/max temperature.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("predictive_temp_hysteresis", coFloat);
+    def->label = L("Predictive temperature hysteresis");
+    def->category = L("Advanced");
+    def->tooltip = L("Minimum change (in °C) between the last emitted nozzle temperature and the "
+                     "newly predicted setpoint required to insert a new M104 command. Prevents "
+                     "flooding the firmware with tiny temperature changes.");
+    def->sidetext = L("°C");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(2.0));
+
     def = this->add("slice_closing_radius", coFloat);
     def->label = L("Slice gap closing radius");
     def->category = L("Advanced");
@@ -5155,6 +5273,13 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
     if (value == "monotonous" && (opt_key == "top_fill_pattern" || opt_key == "bottom_fill_pattern" || opt_key == "fill_pattern"))
         value = "monotonic";
 
+    // Legacy: old time-based ramp parameters replaced with speed-based ones.
+    // Units changed (s → °C/s), so drop old values and let defaults apply.
+    if (opt_key == "nozzle_thermal_time_constant" || opt_key == "nozzle_heatup_ramp" || opt_key == "nozzle_cooldown_ramp") {
+        opt_key = {};
+        return;
+    }
+
     if (PrintConfigDef_ignore.find(opt_key) != PrintConfigDef_ignore.end()) {
         opt_key = {};
         return;
@@ -5220,6 +5345,9 @@ void PrintConfigDef::handle_legacy_composite(DynamicPrintConfig &config)
         }
         config.set_key_value("wiping_volumes_use_custom_matrix", new ConfigOptionBool(custom));
     }
+
+    // Old time-based ramp parameters are dropped by handle_legacy (units changed),
+    // so no composite migration needed for nozzle_heating_speed / nozzle_cooling_speed.
 }
 
 const PrintConfigDef print_config_def;

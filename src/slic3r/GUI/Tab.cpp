@@ -1675,6 +1675,9 @@ void TabPrint::build()
         optgroup->append_single_option_line("interface_shells");
         optgroup->append_single_option_line("mmu_segmented_region_max_width");
         optgroup->append_single_option_line("mmu_segmented_region_interlocking_depth");
+        optgroup->append_single_option_line("tool_ordering_optimization");
+        optgroup->append_single_option_line("enable_predictive_nozzle_temperature");
+        optgroup->append_single_option_line("predictive_temp_hysteresis");
 
         optgroup->append_single_option_line("interlocking_beam");
         optgroup->append_single_option_line("interlocking_beam_width");
@@ -2308,6 +2311,17 @@ void TabFilament::build()
         optgroup = page->new_optgroup(L("Shrinkage compensation"));
         optgroup->append_single_option_line("filament_shrinkage_compensation_xy");
         optgroup->append_single_option_line("filament_shrinkage_compensation_z");
+
+        optgroup = page->new_optgroup(L("Predictive nozzle temperature"));
+        optgroup->append_single_option_line("nozzle_heating_speed");
+        optgroup->append_single_option_line("nozzle_cooling_speed");
+        optgroup->append_single_option_line("filament_heat_transfer_coeff");
+        optgroup->append_single_option_line("filament_temp_clamp_min");
+        optgroup->append_single_option_line("filament_temp_clamp_max");
+        optgroup->append_single_option_line("filament_temp_offset_external_perimeter");
+        optgroup->append_single_option_line("filament_temp_offset_overhang");
+        optgroup->append_single_option_line("filament_temp_offset_bridge");
+        optgroup->append_single_option_line("filament_temp_offset_infill");
 
         optgroup = page->new_optgroup(L("Wipe tower parameters"));
         optgroup->append_single_option_line("filament_minimal_purge_on_wipe_tower");

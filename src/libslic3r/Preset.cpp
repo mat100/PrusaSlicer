@@ -506,7 +506,8 @@ static std::vector<std::string> s_Preset_print_options {
     "elefant_foot_compensation", "xy_size_compensation", "resolution", "gcode_resolution", "arc_fitting",
     "wipe_tower",
     "wipe_tower_width", "wipe_tower_cone_angle", "wipe_tower_brim_width", "wipe_tower_bridging", "single_extruder_multi_material_priming", "mmu_segmented_region_max_width",
-    "mmu_segmented_region_interlocking_depth", "wipe_tower_extruder", "wipe_tower_no_sparse_layers", "wipe_tower_extra_flow", "wipe_tower_extra_spacing", "compatible_printers", "compatible_printers_condition", "inherits",
+    "mmu_segmented_region_interlocking_depth", "wipe_tower_extruder", "wipe_tower_no_sparse_layers", "tool_ordering_optimization", "wipe_tower_extra_flow", "wipe_tower_extra_spacing", "compatible_printers", "compatible_printers_condition", "inherits",
+    "enable_predictive_nozzle_temperature", "predictive_temp_hysteresis",
     "perimeter_generator", "wall_transition_length", "wall_transition_filter_deviation", "wall_transition_angle",
     "wall_distribution_count", "min_feature_size", "min_bead_width",
     "top_one_perimeter_type", "only_one_perimeter_first_layer",
@@ -535,7 +536,12 @@ static std::vector<std::string> s_Preset_filament_options {
     // Shrinkage compensation
     "filament_shrinkage_compensation_xy", "filament_shrinkage_compensation_z",
     // Seams overrides
-    "filament_seam_gap_distance"
+    "filament_seam_gap_distance",
+    // Predictive nozzle temperature
+    "nozzle_heating_speed", "nozzle_cooling_speed", "filament_heat_transfer_coeff",
+    "filament_temp_clamp_min", "filament_temp_clamp_max",
+    "filament_temp_offset_external_perimeter", "filament_temp_offset_overhang",
+    "filament_temp_offset_bridge", "filament_temp_offset_infill"
 };
 
 static std::vector<std::string> s_Preset_machine_limits_options {

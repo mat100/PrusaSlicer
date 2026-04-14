@@ -169,6 +169,8 @@ set(SLIC3R_SOURCES
     GCode/ConflictChecker.hpp
     GCode/CoolingBuffer.cpp
     GCode/CoolingBuffer.hpp
+    GCode/PredictiveTemperatureBuffer.cpp
+    GCode/PredictiveTemperatureBuffer.hpp
     GCode/ExtrusionProcessor.cpp
     GCode/ExtrusionProcessor.hpp
     GCode/FindReplace.cpp
