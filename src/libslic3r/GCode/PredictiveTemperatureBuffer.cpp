@@ -379,25 +379,21 @@ static std::string schedule_and_emit(
     {
         const std::size_t flow_inserts_end = inserts.size();
 
+        // Pass 1: Process critical events in the front layer.
         for (const auto &crit : critical_events) {
-            // Compute insertion point for this critical event.
-            const float tau = compute_tau(last_emitted_temp, crit.required_T, heat_speed, cool_speed);
-            const float insertion_time = crit.global_time - tau;
-
-            // Only schedule if the insertion point falls within the front layer.
-            if (insertion_time > front_total_time)
+            if (crit.global_time > front_total_time)
                 continue;
 
-            const float effective_time = std::max(0.f, insertion_time);
+            // Find the line at the critical event's time.
             std::size_t j = 0;
             for (; j < front.lines.size(); ++j) {
-                if (front.lines[j].start_time >= effective_time)
+                if (front.lines[j].start_time >= crit.global_time)
                     break;
             }
             if (j >= front.lines.size())
                 j = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
 
-            // Find the actual preceding setpoint from sorted flow inserts before j.
+            // Find preceding setpoint from sorted flow inserts.
             int preceding_sp = last_emitted_temp;
             for (std::size_t k = 0; k < flow_inserts_end; ++k) {
                 if (inserts[k].line_idx <= j)
@@ -409,12 +405,44 @@ static std::string schedule_and_emit(
             if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
                 continue;
 
-            // Recompute tau from the actual preceding setpoint.
-            const float tau2 = compute_tau(preceding_sp, crit.required_T, heat_speed, cool_speed);
-            const float ins_time2 = std::max(0.f, crit.global_time - tau2);
+            // Compute tau from actual preceding setpoint and insert before the event.
+            const float tau = compute_tau(preceding_sp, crit.required_T, heat_speed, cool_speed);
+            const float ins_time = std::max(0.f, crit.global_time - tau);
             std::size_t j2 = 0;
             for (; j2 < front.lines.size(); ++j2) {
-                if (front.lines[j2].start_time >= ins_time2)
+                if (front.lines[j2].start_time >= ins_time)
+                    break;
+            }
+            if (j2 >= front.lines.size())
+                j2 = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
+
+            inserts.push_back({ j2, crit.required_T });
+        }
+
+        // Pass 2: Process critical events in future layers that need preheat in the front layer.
+        for (const auto &crit : critical_events) {
+            if (crit.global_time <= front_total_time)
+                continue; // Already handled in pass 1.
+
+            // Find preceding setpoint at end of front layer.
+            int preceding_sp = last_emitted_temp;
+            for (std::size_t k = 0; k < flow_inserts_end; ++k)
+                preceding_sp = inserts[k].temp;
+
+            if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
+                continue;
+
+            const float tau = compute_tau(preceding_sp, crit.required_T, heat_speed, cool_speed);
+            const float insertion_time = crit.global_time - tau;
+
+            // Only schedule if preheat must start within the front layer.
+            if (insertion_time > front_total_time)
+                continue;
+
+            const float ins_time = std::max(0.f, insertion_time);
+            std::size_t j2 = 0;
+            for (; j2 < front.lines.size(); ++j2) {
+                if (front.lines[j2].start_time >= ins_time)
                     break;
             }
             if (j2 >= front.lines.size())
