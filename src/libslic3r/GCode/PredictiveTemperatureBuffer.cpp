@@ -85,6 +85,9 @@ void PredictiveTemperatureBuffer::reset(const Vec3d &position)
     m_y = float(position.y());
     m_f_mm_min = 0.f;
     m_last_emitted_temp = -1;
+    m_ramp_from_T = 0.f;
+    m_ramp_target_T = 0.f;
+    m_ramp_elapsed = 0.f;
     m_impl->buffer.clear();
     m_impl->buffer_time = 0.f;
 }
@@ -272,7 +275,8 @@ static std::string schedule_and_emit(
     std::deque<ParsedLayer> &buffer,
     int &last_emitted_temp,
     float heat_speed, float cool_speed, float hysteresis,
-    float tau_max)
+    float tau_max,
+    float &ramp_from_T, float &ramp_target_T, float &ramp_elapsed)
 {
     if (buffer.empty())
         return {};
@@ -303,8 +307,16 @@ static std::string schedule_and_emit(
         }
 
         // Merge consecutive raw segments into groups.  Two segments belong to the
-        // same group if the gap between them (non-critical time) is small — less
-        // than tau_max.  Within a group, compute the time-weighted average temperature.
+        // same group if:
+        //   (a) the gap between them is small (< 3 seconds — e.g. a short travel
+        //       or retraction between perimeter segments of the same feature), AND
+        //   (b) the new segment's temperature is close to the group's running average
+        //       (within hysteresis).
+        // Within a group, compute the time-weighted average temperature.
+        // This avoids merging segments with genuinely different temperatures (e.g.
+        // normal wall at 240°C and overhang at 210°C) while still merging micro-
+        // variations within the same feature (219°C, 221°C, 220°C).
+        constexpr float max_group_gap = 3.f; // seconds
         for (std::size_t ri = 0; ri < raw.size(); ) {
             float group_start = raw[ri].global_time;
             float weight_sum  = 0.f;
@@ -314,11 +326,15 @@ static std::string schedule_and_emit(
             std::size_t rj = ri;
             while (rj < raw.size()) {
                 if (rj > ri) {
-                    // Gap between end of previous segment and start of this one.
                     const float prev_end = raw[rj - 1].global_time + raw[rj - 1].duration;
                     const float gap = raw[rj].global_time - prev_end;
-                    if (gap > tau_max)
-                        break; // too large a gap — start a new group
+                    if (gap > max_group_gap)
+                        break; // large gap — different feature block
+
+                    // Check if the new segment's temperature is close to the group average.
+                    const float avg_so_far = tw_temp / weight_sum;
+                    if (std::abs(float(raw[rj].target_T) - avg_so_far) > hysteresis)
+                        break; // temperature diverged — start a new group
                 }
                 tw_temp     += float(raw[rj].target_T) * raw[rj].duration;
                 weight_sum  += raw[rj].duration;
@@ -433,13 +449,20 @@ static std::string schedule_and_emit(
             if (line.target_T < 0 || line.is_critical)
                 continue;
 
-            // Check if there's a critical event within tau_max seconds.
+            // Check if there's a critical event close enough that we need to
+            // reserve the thermal headroom for it.  Use the actual tau needed for
+            // the temperature transition (not the worst-case tau_max), so that
+            // non-critical segments far enough from critical events can still get
+            // their own temperature adjustments.
             const float line_global_time = line.start_time; // front layer starts at global time 0
             bool critical_nearby = false;
             for (const auto &crit : critical_events) {
-                if (crit.global_time >= line_global_time && (crit.global_time - line_global_time) <= tau_max) {
-                    critical_nearby = true;
-                    break;
+                if (crit.global_time >= line_global_time) {
+                    const float tau_to_crit = compute_tau(line.target_T, crit.required_T, heat_speed, cool_speed);
+                    if ((crit.global_time - line_global_time) <= tau_to_crit) {
+                        critical_nearby = true;
+                        break;
+                    }
                 }
             }
             if (critical_nearby)
@@ -505,10 +528,10 @@ static std::string schedule_and_emit(
     std::string out;
     out.reserve(front.gcode.size() + inserts.size() * 48u + front.lines.size() * 24u);
 
-    // Thermal model state: track the nozzle temperature as it ramps toward setpoint.
-    float ramp_from_T    = (last_emitted_temp >= 0) ? float(last_emitted_temp) : 0.f;
-    float ramp_target_T  = ramp_from_T;
-    float ramp_start_time = 0.f;    // layer-local time when last M104 was issued
+    // Thermal model state carried across layers via reference parameters.
+    // Convert accumulated elapsed time to a layer-local start time.
+    // ramp_elapsed is how long since the last M104 at the start of this layer.
+    float ramp_start_time = -ramp_elapsed;    // negative = M104 was issued before this layer
 
     std::size_t next_ins = 0;
     for (std::size_t i = 0; i < front.lines.size(); ++i) {
@@ -563,6 +586,10 @@ static std::string schedule_and_emit(
         last_emitted_temp = inserts[next_ins].temp;
         ++next_ins;
     }
+
+    // Update ramp state for the next layer: compute elapsed time since last M104
+    // at the end of this layer.
+    ramp_elapsed = front_total_time - ramp_start_time;
 
     return out;
 }
@@ -621,7 +648,7 @@ std::string PredictiveTemperatureBuffer::process_layer(std::string &&gcode, std:
             break;
 
         // We have enough look-ahead. Process and emit the front layer.
-        std::string layer_out = schedule_and_emit(m_impl->buffer, m_last_emitted_temp, heat_speed, cool_speed, hyst, tau_max);
+        std::string layer_out = schedule_and_emit(m_impl->buffer, m_last_emitted_temp, heat_speed, cool_speed, hyst, tau_max, m_ramp_from_T, m_ramp_target_T, m_ramp_elapsed);
         result += layer_out;
 
         m_impl->buffer_time -= m_impl->buffer.front().total_time;
@@ -648,7 +675,7 @@ std::string PredictiveTemperatureBuffer::flush_pending()
 
     std::string result;
     while (! m_impl->buffer.empty()) {
-        std::string layer_out = schedule_and_emit(m_impl->buffer, m_last_emitted_temp, heat_speed, cool_speed, hyst, tau_max);
+        std::string layer_out = schedule_and_emit(m_impl->buffer, m_last_emitted_temp, heat_speed, cool_speed, hyst, tau_max, m_ramp_from_T, m_ramp_target_T, m_ramp_elapsed);
         result += layer_out;
 
         m_impl->buffer_time -= m_impl->buffer.front().total_time;
