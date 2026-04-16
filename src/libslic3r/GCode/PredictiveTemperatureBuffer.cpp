@@ -253,8 +253,13 @@ static ParsedLayer parse_layer(
                     char axis = *r++;
                     float v = 0.f;
                     if (! parse_axis(r, v)) break;
-                    if (axis == 'S' || axis == 's')
-                        last_emitted_temp = int(std::lround(v));
+                    if (axis == 'S' || axis == 's') {
+                        // Only track M109 (non-suppressed). M104 will be suppressed
+                        // and replaced by the predictive algorithm, so don't let it
+                        // overwrite last_emitted_temp which tracks the actual output.
+                        if (mnum == 109)
+                            last_emitted_temp = int(std::lround(v));
+                    }
                 }
                 // Suppress M104 — the predictive algorithm replaces them.
                 // Keep M109 (wait) as they come from toolchange or start gcode.
