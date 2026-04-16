@@ -397,12 +397,13 @@ static std::string schedule_and_emit(
             if (j >= front.lines.size())
                 j = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
 
-            // Find the actual preceding setpoint: last insert (flow or critical) before j,
-            // or last_emitted_temp if none.
+            // Find the actual preceding setpoint from sorted flow inserts before j.
             int preceding_sp = last_emitted_temp;
-            for (std::size_t k = 0; k < inserts.size(); ++k) {
+            for (std::size_t k = 0; k < flow_inserts_end; ++k) {
                 if (inserts[k].line_idx <= j)
                     preceding_sp = inserts[k].temp;
+                else
+                    break;
             }
 
             if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
