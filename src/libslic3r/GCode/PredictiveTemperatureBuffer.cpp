@@ -280,18 +280,31 @@ static std::string schedule_and_emit(
     ParsedLayer &front = buffer.front();
     const float front_total_time = front.total_time;
 
-    // Step 1: Collect all critical events across the entire buffer as a global timeline.
+    // Step 1: Collect critical events across the entire buffer as a global timeline.
+    // Consecutive critical segments at the same temperature are merged into a single
+    // event with accumulated dwell time, so that the reachability check in Step 2
+    // can judge whether the nozzle has enough time to reach the target.
     struct CriticalEvent {
         float global_time;
         int   required_T;
+        float dwell;        // total duration of consecutive critical segments at this temp
     };
     std::vector<CriticalEvent> critical_events;
 
     float cumulative_time = 0.f;
     for (const auto &layer : buffer) {
         for (const auto &line : layer.lines) {
-            if (line.is_critical && line.target_T >= 0)
-                critical_events.push_back({ cumulative_time + line.start_time, line.target_T });
+            if (line.is_critical && line.target_T >= 0) {
+                const float gt = cumulative_time + line.start_time;
+                // Merge into the previous event if the temperature is the same (within hysteresis).
+                if (! critical_events.empty()
+                    && std::abs(critical_events.back().required_T - line.target_T) < hysteresis)
+                {
+                    critical_events.back().dwell += line.duration;
+                } else {
+                    critical_events.push_back({ gt, line.target_T, line.duration });
+                }
+            }
         }
         cumulative_time += layer.total_time;
     }
@@ -306,6 +319,17 @@ static std::string schedule_and_emit(
     for (const auto &crit : critical_events) {
         if (running_setpoint >= 0 && std::abs(crit.required_T - running_setpoint) < hysteresis)
             continue;
+
+        // Reachability check: skip if the nozzle cannot reach at least 50% of the
+        // temperature delta before this critical segment group ends.  Sending an M104
+        // for an unreachable target only destabilises the PID controller.
+        if (running_setpoint >= 0) {
+            const float required_delta = float(std::abs(crit.required_T - running_setpoint));
+            const float speed = (crit.required_T > running_setpoint) ? heat_speed : cool_speed;
+            const float achievable_delta = crit.dwell * speed;
+            if (required_delta > 0.f && achievable_delta < required_delta * 0.5f)
+                continue;
+        }
 
         // Compute tau dynamically from temperature delta and speed.
         const float tau = compute_tau(running_setpoint, crit.required_T, heat_speed, cool_speed);
@@ -337,6 +361,22 @@ static std::string schedule_and_emit(
     // Step 3: Between critical events, schedule natural flow-based temperatures
     // for non-critical segments when no critical feature is imminent.
     // Reset running setpoint to track what we've actually scheduled.
+    //
+    // Helper: compute how long the nozzle stays at approximately the same target
+    // temperature starting from line i (consecutive non-critical extrusion segments).
+    auto dwell_time_at_temp = [&](std::size_t i, int target_T) -> float {
+        float total = 0.f;
+        for (std::size_t k = i; k < front.lines.size(); ++k) {
+            const auto &ln = front.lines[k];
+            if (ln.target_T >= 0 && std::abs(ln.target_T - target_T) < hysteresis)
+                total += ln.duration;
+            else if (ln.target_T >= 0)
+                break; // different temperature — end of group
+            // target_T == -1 (travel, comments) don't break the group
+        }
+        return total;
+    };
+
     {
         int sp = last_emitted_temp;
         // Merge insert tracking with forward scan.
@@ -369,6 +409,15 @@ static std::string schedule_and_emit(
             if (sp >= 0 && std::abs(line.target_T - sp) < hysteresis)
                 continue;
 
+            // Reachability check: only schedule if the nozzle can reach at least 50%
+            // of the temperature delta before this segment group ends.
+            {
+                const float dwell = dwell_time_at_temp(i, line.target_T);
+                const float tau_seg = compute_tau(sp, line.target_T, heat_speed, cool_speed);
+                if (tau_seg > 0.f && dwell < tau_seg * 0.5f)
+                    continue; // nozzle can't meaningfully reach this temperature
+            }
+
             // Find insertion point: tau seconds before this line.
             const float tau = compute_tau(sp, line.target_T, heat_speed, cool_speed);
 
@@ -394,6 +443,15 @@ static std::string schedule_and_emit(
 
             inserts.push_back({ j, line.target_T });
             sp = line.target_T;
+
+            // Skip forward past consecutive lines at the same target temperature
+            // to avoid re-evaluating each G1 within the same feature group.
+            for (std::size_t k = i + 1; k < front.lines.size(); ++k) {
+                if (front.lines[k].target_T >= 0
+                    && std::abs(front.lines[k].target_T - line.target_T) >= hysteresis)
+                    break;
+                i = k; // the for-loop will increment past this
+            }
         }
 
         // Sort inserts by line_idx for output assembly.
