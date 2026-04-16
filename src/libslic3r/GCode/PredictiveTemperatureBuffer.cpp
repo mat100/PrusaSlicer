@@ -316,18 +316,32 @@ static std::string schedule_and_emit(
     int running_setpoint = last_emitted_temp;
 
     // Process critical events in chronological order.
-    for (const auto &crit : critical_events) {
+    for (std::size_t ci = 0; ci < critical_events.size(); ++ci) {
+        const auto &crit = critical_events[ci];
         if (running_setpoint >= 0 && std::abs(crit.required_T - running_setpoint) < hysteresis)
             continue;
 
-        // Reachability check: skip if the nozzle cannot reach at least 50% of the
-        // temperature delta before this critical segment group ends.  Sending an M104
-        // for an unreachable target only destabilises the PID controller.
+        // Reachability check: compute the effective dwell — the time this setpoint
+        // would remain active before the next *different* critical event replaces it.
+        // Using just crit.dwell (the critical segment's own duration) is not enough:
+        // a 5-second ExternalPerimeter at 217°C passes dwell check, but if the next
+        // critical event at 221°C arrives 5.6s later the nozzle barely reaches the
+        // target before being told to go back, causing PID oscillation.
         if (running_setpoint >= 0) {
+            // Time until the next critical event with a different temperature.
+            float effective_dwell = crit.dwell;
+            if (ci + 1 < critical_events.size()) {
+                const float time_to_next = critical_events[ci + 1].global_time
+                                         - (crit.global_time + crit.dwell);
+                effective_dwell = crit.dwell + std::max(0.f, time_to_next);
+            }
             const float required_delta = float(std::abs(crit.required_T - running_setpoint));
             const float speed = (crit.required_T > running_setpoint) ? heat_speed : cool_speed;
-            const float achievable_delta = crit.dwell * speed;
-            if (required_delta > 0.f && achievable_delta < required_delta * 0.5f)
+            // The nozzle must be able to reach the target AND hold it for a meaningful
+            // period.  We require: time to reach target (tau) + tau/2 hold <= effective_dwell.
+            // Simplified: tau * 1.5 <= effective_dwell, i.e. effective_dwell >= 1.5 * tau.
+            const float tau = (speed > 0.f) ? (required_delta / speed) : 0.f;
+            if (tau > 0.f && effective_dwell < tau * 1.5f)
                 continue;
         }
 
@@ -409,12 +423,12 @@ static std::string schedule_and_emit(
             if (sp >= 0 && std::abs(line.target_T - sp) < hysteresis)
                 continue;
 
-            // Reachability check: only schedule if the nozzle can reach at least 50%
-            // of the temperature delta before this segment group ends.
+            // Reachability check: only schedule if the nozzle can reach the target
+            // AND hold it for a meaningful period (tau * 1.5) before the group ends.
             {
                 const float dwell = dwell_time_at_temp(i, line.target_T);
                 const float tau_seg = compute_tau(sp, line.target_T, heat_speed, cool_speed);
-                if (tau_seg > 0.f && dwell < tau_seg * 0.5f)
+                if (tau_seg > 0.f && dwell < tau_seg * 1.5f)
                     continue; // nozzle can't meaningfully reach this temperature
             }
 
