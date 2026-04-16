@@ -281,30 +281,56 @@ static std::string schedule_and_emit(
     const float front_total_time = front.total_time;
 
     // Step 1: Collect critical events across the entire buffer as a global timeline.
-    // Consecutive critical segments at the same temperature are merged into a single
-    // event with accumulated dwell time, so that the reachability check in Step 2
-    // can judge whether the nozzle has enough time to reach the target.
+    // All consecutive critical segments (even with non-critical gaps like travel moves
+    // or comments in between) are merged into a single event with a time-weighted
+    // average temperature.  This prevents micro-oscillations where an ExternalPerimeter
+    // has segments at 219°C, 221°C, 219°C etc. due to varying feedrates on overhangs.
     struct CriticalEvent {
         float global_time;
         int   required_T;
-        float dwell;        // total duration of consecutive critical segments at this temp
+        float dwell;        // total duration of all critical segments in this group
     };
     std::vector<CriticalEvent> critical_events;
 
     float cumulative_time = 0.f;
     for (const auto &layer : buffer) {
+        // Collect raw critical segments for this layer, then merge.
+        struct RawCrit { float global_time; int target_T; float duration; };
+        std::vector<RawCrit> raw;
         for (const auto &line : layer.lines) {
-            if (line.is_critical && line.target_T >= 0) {
-                const float gt = cumulative_time + line.start_time;
-                // Merge into the previous event if the temperature is the same (within hysteresis).
-                if (! critical_events.empty()
-                    && std::abs(critical_events.back().required_T - line.target_T) < hysteresis)
-                {
-                    critical_events.back().dwell += line.duration;
-                } else {
-                    critical_events.push_back({ gt, line.target_T, line.duration });
+            if (line.is_critical && line.target_T >= 0)
+                raw.push_back({ cumulative_time + line.start_time, line.target_T, line.duration });
+        }
+
+        // Merge consecutive raw segments into groups.  Two segments belong to the
+        // same group if the gap between them (non-critical time) is small — less
+        // than tau_max.  Within a group, compute the time-weighted average temperature.
+        for (std::size_t ri = 0; ri < raw.size(); ) {
+            float group_start = raw[ri].global_time;
+            float weight_sum  = 0.f;
+            float tw_temp     = 0.f;
+            float total_dwell = 0.f;
+
+            std::size_t rj = ri;
+            while (rj < raw.size()) {
+                if (rj > ri) {
+                    // Gap between end of previous segment and start of this one.
+                    const float prev_end = raw[rj - 1].global_time + raw[rj - 1].duration;
+                    const float gap = raw[rj].global_time - prev_end;
+                    if (gap > tau_max)
+                        break; // too large a gap — start a new group
                 }
+                tw_temp     += float(raw[rj].target_T) * raw[rj].duration;
+                weight_sum  += raw[rj].duration;
+                total_dwell += raw[rj].duration;
+                ++rj;
             }
+
+            if (weight_sum > 0.f) {
+                const int avg_T = int(std::lround(tw_temp / weight_sum));
+                critical_events.push_back({ group_start, avg_T, total_dwell });
+            }
+            ri = rj;
         }
         cumulative_time += layer.total_time;
     }
