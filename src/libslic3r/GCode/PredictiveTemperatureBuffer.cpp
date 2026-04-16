@@ -205,8 +205,13 @@ static ParsedLayer parse_layer(
                 li.duration = dt;
                 t_accum += dt;
 
-                if (has_e && length > 0.f && width > 0.f && height > 0.f) {
+                if (has_e && length > 0.f && width > 0.f && height > 0.f
+                    && role != GCodeExtrusionRole::OverhangPerimeter
+                    && role != GCodeExtrusionRole::BridgeInfill) {
                     // Use commanded feedrate (already adjusted by CoolingBuffer).
+                    // Skip overhang/bridge segments — CoolingBuffer reduces their feedrate
+                    // which would cause the flow model to compute a lower temperature,
+                    // but short overhang dips destabilise the PID controller.
                     const float flow = width * height * v_mm_s;
                     float t = float(t_base) + k_flow * flow;
                     int ti = std::clamp(int(std::lround(t)), t_clamp_lo, t_clamp_hi);
@@ -399,26 +404,6 @@ static std::string schedule_and_emit(
         // Sort inserts by line_idx for output assembly.
         std::sort(inserts.begin(), inserts.end(),
                   [](const Insert &a, const Insert &b) { return a.line_idx < b.line_idx; });
-    }
-
-    // Step 3b: Enforce minimum interval between M104 commands.
-    // The PID controller needs time to settle; sending M104 more often than every
-    // few seconds causes oscillation — especially on overhangs where CoolingBuffer
-    // creates short segments with rapidly varying feedrates.
-    {
-        constexpr float min_interval = 5.f; // seconds — minimum time between M104s
-        std::vector<Insert> filtered;
-        filtered.reserve(inserts.size());
-        float last_insert_time = -min_interval; // allow first insert immediately
-        for (const auto &ins : inserts) {
-            const float ins_time = (ins.line_idx < front.lines.size())
-                                 ? front.lines[ins.line_idx].start_time : front_total_time;
-            if (ins_time - last_insert_time >= min_interval) {
-                filtered.push_back(ins);
-                last_insert_time = ins_time;
-            }
-        }
-        inserts = std::move(filtered);
     }
 
     // Step 4: Assemble output.
