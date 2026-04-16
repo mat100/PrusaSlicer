@@ -406,11 +406,17 @@ static std::string schedule_and_emit(
                   [](const Insert &a, const Insert &b) { return a.line_idx < b.line_idx; });
     }
 
-    // Step 4: Assemble output.
-    // Emit _PREDICTIVE_TEMP: tags before extrusion lines so that GCodeProcessor
-    // can show the correct target temperature in the preview (not the M104 setpoint).
+    // Step 4: Assemble output with thermal ramp model for preview.
+    // _PREDICTIVE_TEMP tags show the estimated physical nozzle temperature,
+    // accounting for heating/cooling ramp time after each M104 command.
     std::string out;
     out.reserve(front.gcode.size() + inserts.size() * 48u + front.lines.size() * 24u);
+
+    // Thermal ramp state.  Initialize from last_emitted_temp — if unknown (-1),
+    // we skip emitting tags until the first M104 establishes a known temperature.
+    float ramp_from_T     = (last_emitted_temp >= 0) ? float(last_emitted_temp) : -1.f;
+    float ramp_target_T   = ramp_from_T;
+    float ramp_start_time = 0.f;
 
     std::size_t next_ins = 0;
     for (std::size_t i = 0; i < front.lines.size(); ++i) {
@@ -419,15 +425,40 @@ static std::string schedule_and_emit(
             std::snprintf(buf, sizeof(buf), "M104 S%d ; predictive nozzle temperature\n",
                           inserts[next_ins].temp);
             out.append(buf);
+
+            // Update ramp model: compute current estimated temperature, then start
+            // ramping toward the new setpoint.
+            if (ramp_from_T >= 0.f) {
+                const float elapsed = front.lines[i].start_time - ramp_start_time;
+                const float delta = ramp_target_T - ramp_from_T;
+                const float speed = (delta > 0.f) ? heat_speed : cool_speed;
+                if (std::abs(delta) < 0.5f || speed <= 0.f)
+                    ramp_from_T = ramp_target_T;
+                else
+                    ramp_from_T += std::copysign(std::min(std::abs(delta), speed * elapsed), delta);
+            } else {
+                // First M104 ever — assume nozzle is already at this temperature.
+                ramp_from_T = float(inserts[next_ins].temp);
+            }
+            ramp_target_T   = float(inserts[next_ins].temp);
+            ramp_start_time = front.lines[i].start_time;
             last_emitted_temp = inserts[next_ins].temp;
             ++next_ins;
         }
-        // Emit current setpoint for preview visualization.  Show what the firmware
-        // is actually targeting (last_emitted_temp), not the per-segment flow-based
-        // ideal, so the preview matches physical reality.
-        if (front.lines[i].target_T >= 0 && last_emitted_temp >= 0) {
+
+        // Emit estimated physical nozzle temperature for preview.
+        if (front.lines[i].target_T >= 0 && ramp_from_T >= 0.f) {
+            const float elapsed = front.lines[i].start_time - ramp_start_time;
+            const float delta = ramp_target_T - ramp_from_T;
+            float est_T;
+            if (std::abs(delta) < 0.5f) {
+                est_T = ramp_target_T;
+            } else {
+                const float speed = (delta > 0.f) ? heat_speed : cool_speed;
+                est_T = ramp_from_T + std::copysign(std::min(std::abs(delta), speed * elapsed), delta);
+            }
             char buf[48];
-            std::snprintf(buf, sizeof(buf), ";_PREDICTIVE_TEMP:%d\n", last_emitted_temp);
+            std::snprintf(buf, sizeof(buf), ";_PREDICTIVE_TEMP:%d\n", int(std::lround(est_T)));
             out.append(buf);
         }
         if (! front.lines[i].suppress)
