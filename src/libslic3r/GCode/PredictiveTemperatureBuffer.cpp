@@ -316,64 +316,13 @@ static std::string schedule_and_emit(
         cumulative_time += layer.total_time;
     }
 
-    // Step 2: Schedule M104 insertions for the front layer.
+    // Step 2: Schedule flow-based M104 for non-critical segments.
     struct Insert { std::size_t line_idx; int temp; };
     std::vector<Insert> inserts;
 
-    int running_setpoint = last_emitted_temp;
-
-    // Process critical events in chronological order.
-    for (const auto &crit : critical_events) {
-        if (running_setpoint >= 0 && std::abs(crit.required_T - running_setpoint) < hysteresis)
-            continue;
-
-        // Compute tau dynamically from temperature delta and speed.
-        const float tau = compute_tau(running_setpoint, crit.required_T, heat_speed, cool_speed);
-        const float insertion_time = crit.global_time - tau;
-
-        // Only schedule if the insertion point falls within the front layer.
-        if (insertion_time > front_total_time)
-            continue; // This critical event is far in the future, doesn't affect front layer.
-
-        // Find the line in the front layer at or after the insertion time.
-        const float effective_time = std::max(0.f, insertion_time);
-        std::size_t j = 0;
-        for (; j < front.lines.size(); ++j) {
-            if (front.lines[j].start_time >= effective_time)
-                break;
-        }
-        if (j >= front.lines.size())
-            j = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
-
-        // Coalesce: if the previous insert is at the same line, overwrite with the newer target.
-        if (! inserts.empty() && inserts.back().line_idx == j)
-            inserts.back().temp = crit.required_T;
-        else
-            inserts.push_back({ j, crit.required_T });
-
-        running_setpoint = crit.required_T;
-    }
-
-    // Sort Step 2 inserts by line_idx so that Step 3's sp tracking is correct
-    // even when a later critical event has a larger tau (e.g. cooling is slower).
-    std::sort(inserts.begin(), inserts.end(),
-              [](const Insert &a, const Insert &b) { return a.line_idx < b.line_idx; });
-
-    // Step 3: Between critical events, schedule natural flow-based temperatures
-    // for non-critical segments when no critical feature is imminent.
-    // Reset running setpoint to track what we've actually scheduled.
     {
         int sp = last_emitted_temp;
-        // Merge insert tracking with forward scan.
-        std::size_t next_insert = 0;
-
         for (std::size_t i = 0; i < front.lines.size(); ++i) {
-            // Update sp from scheduled inserts at this position.
-            while (next_insert < inserts.size() && inserts[next_insert].line_idx == i) {
-                sp = inserts[next_insert].temp;
-                ++next_insert;
-            }
-
             const auto &line = front.lines[i];
             if (line.target_T < 0 || line.is_critical)
                 continue;
@@ -420,8 +369,62 @@ static std::string schedule_and_emit(
             inserts.push_back({ j, line.target_T });
             sp = line.target_T;
         }
+    }
 
-        // Sort inserts by line_idx for output assembly.
+    // Step 3: Schedule M104 for critical events, accounting for flow-based inserts.
+    // Sort flow-based inserts first so we can find the actual preceding setpoint.
+    std::sort(inserts.begin(), inserts.end(),
+              [](const Insert &a, const Insert &b) { return a.line_idx < b.line_idx; });
+
+    {
+        const std::size_t flow_inserts_end = inserts.size();
+
+        for (const auto &crit : critical_events) {
+            // Compute insertion point for this critical event.
+            const float tau = compute_tau(last_emitted_temp, crit.required_T, heat_speed, cool_speed);
+            const float insertion_time = crit.global_time - tau;
+
+            // Only schedule if the insertion point falls within the front layer.
+            if (insertion_time > front_total_time)
+                continue;
+
+            const float effective_time = std::max(0.f, insertion_time);
+            std::size_t j = 0;
+            for (; j < front.lines.size(); ++j) {
+                if (front.lines[j].start_time >= effective_time)
+                    break;
+            }
+            if (j >= front.lines.size())
+                j = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
+
+            // Find the actual preceding setpoint: last insert (flow or critical) before j,
+            // or last_emitted_temp if none.
+            int preceding_sp = last_emitted_temp;
+            for (std::size_t k = 0; k < inserts.size(); ++k) {
+                if (inserts[k].line_idx <= j)
+                    preceding_sp = inserts[k].temp;
+                else
+                    break;
+            }
+
+            if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
+                continue;
+
+            // Recompute tau from the actual preceding setpoint.
+            const float tau2 = compute_tau(preceding_sp, crit.required_T, heat_speed, cool_speed);
+            const float ins_time2 = std::max(0.f, crit.global_time - tau2);
+            std::size_t j2 = 0;
+            for (; j2 < front.lines.size(); ++j2) {
+                if (front.lines[j2].start_time >= ins_time2)
+                    break;
+            }
+            if (j2 >= front.lines.size())
+                j2 = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
+
+            inserts.push_back({ j2, crit.required_T });
+        }
+
+        // Sort all inserts by line_idx for output assembly.
         std::sort(inserts.begin(), inserts.end(),
                   [](const Insert &a, const Insert &b) { return a.line_idx < b.line_idx; });
         // Deduplicate: keep only the last temperature at each line_idx.
