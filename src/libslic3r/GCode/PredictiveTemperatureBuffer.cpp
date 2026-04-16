@@ -489,10 +489,12 @@ static std::string schedule_and_emit(
             last_emitted_temp = inserts[next_ins].temp;
             ++next_ins;
         }
-        // Emit target temperature tag before extrusion lines for preview visualization.
-        if (front.lines[i].target_T >= 0) {
+        // Emit current setpoint tag before extrusion lines for preview visualization.
+        // Use last_emitted_temp (the actual M104 setpoint) rather than the per-segment
+        // flow-based target, so the preview matches what the firmware actually sees.
+        if (front.lines[i].target_T >= 0 && last_emitted_temp >= 0) {
             char buf[48];
-            std::snprintf(buf, sizeof(buf), ";_PREDICTIVE_TEMP:%d\n", front.lines[i].target_T);
+            std::snprintf(buf, sizeof(buf), ";_PREDICTIVE_TEMP:%d\n", last_emitted_temp);
             out.append(buf);
         }
         if (! front.lines[i].suppress)
