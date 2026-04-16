@@ -181,6 +181,7 @@ static ParsedLayer parse_layer(
                 float nx = x, ny = y;
                 bool has_e = false;
                 float new_f = f_mm_min;
+                float arc_i = 0.f, arc_j = 0.f;
                 const char *r = qend;
                 while (r < line_end) {
                     while (r < line_end && (*r == ' ' || *r == '\t')) ++r;
@@ -193,12 +194,26 @@ static ParsedLayer parse_layer(
                         case 'Y': case 'y': ny = v; break;
                         case 'E': case 'e': has_e = (v > 0.f); break;
                         case 'F': case 'f': new_f = v; break;
+                        case 'I': case 'i': arc_i = v; break;
+                        case 'J': case 'j': arc_j = v; break;
                         default: break;
                     }
                 }
-                const float dx = nx - x;
-                const float dy = ny - y;
-                const float length = std::sqrt(dx * dx + dy * dy);
+                float length;
+                if ((gnum == 2 || gnum == 3) && (arc_i != 0.f || arc_j != 0.f)) {
+                    const float cx = x + arc_i, cy = y + arc_j;
+                    const float radius = std::sqrt(arc_i * arc_i + arc_j * arc_j);
+                    float sweep = std::atan2(ny - cy, nx - cx) - std::atan2(y - cy, x - cx);
+                    if (gnum == 2) { // CW
+                        if (sweep >= 0.f) sweep -= 2.f * float(M_PI);
+                    } else {          // CCW
+                        if (sweep <= 0.f) sweep += 2.f * float(M_PI);
+                    }
+                    length = radius * std::abs(sweep);
+                } else {
+                    const float dx = nx - x, dy = ny - y;
+                    length = std::sqrt(dx * dx + dy * dy);
+                }
                 const float f_eff = (new_f > 0.f) ? new_f : f_mm_min;
                 const float v_mm_s = f_eff / 60.f;
                 const float dt = segment_time_sec(length, v_mm_s, accel);
@@ -409,6 +424,17 @@ static std::string schedule_and_emit(
         // Sort inserts by line_idx for output assembly.
         std::sort(inserts.begin(), inserts.end(),
                   [](const Insert &a, const Insert &b) { return a.line_idx < b.line_idx; });
+        // Deduplicate: keep only the last temperature at each line_idx.
+        if (inserts.size() > 1) {
+            auto out = inserts.begin();
+            for (auto it = inserts.begin() + 1; it != inserts.end(); ++it) {
+                if (it->line_idx == out->line_idx)
+                    out->temp = it->temp;
+                else
+                    *(++out) = *it;
+            }
+            inserts.erase(out + 1, inserts.end());
+        }
     }
 
     // Step 4: Assemble output with thermal ramp model for preview.
