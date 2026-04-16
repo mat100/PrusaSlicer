@@ -403,8 +403,6 @@ static std::string schedule_and_emit(
             for (std::size_t k = 0; k < inserts.size(); ++k) {
                 if (inserts[k].line_idx <= j)
                     preceding_sp = inserts[k].temp;
-                else
-                    break;
             }
 
             if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
