@@ -59,10 +59,6 @@ private:
     float         m_height { 0.2f };
     // Last nozzle temperature setpoint observed/emitted (°C). -1 means unknown.
     int           m_last_emitted_temp { -1 };
-    // Thermal ramp model state carried between layers for preview accuracy.
-    float         m_ramp_from_T  { 0.f };  // temperature when last M104 was issued
-    float         m_ramp_target_T { 0.f }; // target of last M104
-    float         m_ramp_elapsed { 0.f };  // time elapsed since last M104 at layer boundary
 };
 
 } // namespace Slic3r
