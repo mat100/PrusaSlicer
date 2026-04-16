@@ -2318,11 +2318,6 @@ void TabFilament::build()
         optgroup->append_single_option_line("filament_heat_transfer_coeff");
         optgroup->append_single_option_line("filament_temp_clamp_min");
         optgroup->append_single_option_line("filament_temp_clamp_max");
-        optgroup->append_single_option_line("filament_temp_offset_external_perimeter");
-        optgroup->append_single_option_line("filament_temp_offset_overhang");
-        optgroup->append_single_option_line("filament_temp_offset_bridge");
-        optgroup->append_single_option_line("filament_temp_offset_infill");
-
         optgroup = page->new_optgroup(L("Wipe tower parameters"));
         optgroup->append_single_option_line("filament_minimal_purge_on_wipe_tower");
 

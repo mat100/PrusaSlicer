@@ -339,6 +339,11 @@ static std::string schedule_and_emit(
         running_setpoint = crit.required_T;
     }
 
+    // Sort Step 2 inserts by line_idx so that Step 3's sp tracking is correct
+    // even when a later critical event has a larger tau (e.g. cooling is slower).
+    std::sort(inserts.begin(), inserts.end(),
+              [](const Insert &a, const Insert &b) { return a.line_idx < b.line_idx; });
+
     // Step 3: Between critical events, schedule natural flow-based temperatures
     // for non-critical segments when no critical feature is imminent.
     // Reset running setpoint to track what we've actually scheduled.
@@ -483,9 +488,6 @@ static std::string schedule_and_emit(
 
 std::string PredictiveTemperatureBuffer::process_layer(std::string &&gcode, std::size_t layer_id, bool /*flush*/)
 {
-    if (! m_config.enable_predictive_nozzle_temperature.value)
-        return std::move(gcode);
-
     const float heat_speed = float(m_config.nozzle_heating_speed.get_at(m_current_extruder));
     const float cool_speed = float(m_config.nozzle_cooling_speed.get_at(m_current_extruder));
     if (heat_speed <= 0.f && cool_speed <= 0.f)

@@ -539,9 +539,7 @@ static std::vector<std::string> s_Preset_filament_options {
     "filament_seam_gap_distance",
     // Predictive nozzle temperature
     "nozzle_heating_speed", "nozzle_cooling_speed", "filament_heat_transfer_coeff",
-    "filament_temp_clamp_min", "filament_temp_clamp_max",
-    "filament_temp_offset_external_perimeter", "filament_temp_offset_overhang",
-    "filament_temp_offset_bridge", "filament_temp_offset_infill"
+    "filament_temp_clamp_min", "filament_temp_clamp_max"
 };
 
 static std::vector<std::string> s_Preset_machine_limits_options {

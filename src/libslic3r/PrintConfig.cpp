@@ -1262,7 +1262,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("°C/s");
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloats { 5.0 });
+    def->set_default_value(new ConfigOptionFloats { 30.0 });
 
     def = this->add("nozzle_cooling_speed", coFloats);
     def->label = L("Nozzle cooling speed");
@@ -1274,7 +1274,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("°C/s");
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloats { 3.0 });
+    def->set_default_value(new ConfigOptionFloats { 5.0 });
 
     def = this->add("filament_heat_transfer_coeff", coFloats);
     def->label = L("Heat transfer coefficient to filament");
@@ -1286,7 +1286,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("°C per mm³/s");
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloats { 0.4 });
+    def->set_default_value(new ConfigOptionFloats { 2.0 });
 
     def = this->add("filament_temp_clamp_min", coInts);
     def->label = L("Minimum predicted nozzle temperature");
@@ -1309,38 +1309,6 @@ void PrintConfigDef::init_fff_params()
     def->max = max_temp;
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInts { 260 });
-
-    def = this->add("filament_temp_offset_bridge", coInts);
-    def->label = L("Bridge temperature offset");
-    def->category = L("Predictive temperature");
-    def->tooltip = L("Temperature offset applied on top of the base temperature when printing bridges.");
-    def->sidetext = L("°C");
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionInts { -5 });
-
-    def = this->add("filament_temp_offset_overhang", coInts);
-    def->label = L("Overhang temperature offset");
-    def->category = L("Predictive temperature");
-    def->tooltip = L("Temperature offset applied on top of the base temperature when printing overhanging perimeters.");
-    def->sidetext = L("°C");
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionInts { -3 });
-
-    def = this->add("filament_temp_offset_external_perimeter", coInts);
-    def->label = L("External perimeter temperature offset");
-    def->category = L("Predictive temperature");
-    def->tooltip = L("Temperature offset applied on top of the base temperature when printing external perimeters.");
-    def->sidetext = L("°C");
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionInts { 0 });
-
-    def = this->add("filament_temp_offset_infill", coInts);
-    def->label = L("Infill temperature offset");
-    def->category = L("Predictive temperature");
-    def->tooltip = L("Temperature offset applied on top of the base temperature when printing infill.");
-    def->sidetext = L("°C");
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionInts { 0 });
 
     def = this->add("filament_max_volumetric_speed", coFloats);
     def->label = L("Max volumetric speed");
@@ -3317,7 +3285,7 @@ void PrintConfigDef::init_fff_params()
                      "computed from the volumetric flow, the feature type and the thermal constants "
                      "configured per filament. Clamped by the per-filament min/max temperature.");
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(false));
+    def->set_default_value(new ConfigOptionBool(true));
 
     def = this->add("predictive_temp_hysteresis", coFloat);
     def->label = L("Predictive temperature hysteresis");
