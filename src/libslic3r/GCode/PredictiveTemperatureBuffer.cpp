@@ -384,44 +384,58 @@ static std::string schedule_and_emit(
     {
         const std::size_t flow_inserts_end = inserts.size();
 
-        // Pass 1: Process critical events in the front layer.
-        for (const auto &crit : critical_events) {
-            if (crit.global_time > front_total_time)
-                continue;
+        // Pass 1: Iteratively process critical events in the front layer.
+        // Run multiple passes because a critical insert (e.g. M104 S211) can change
+        // the preceding setpoint for later events (e.g. S240 that was skipped because
+        // preceding_sp matched last_emitted_temp from the previous layer).
+        for (int pass = 0; pass < 3; ++pass) {
+            // Sort all inserts so preceding_sp lookup works correctly.
+            std::sort(inserts.begin(), inserts.end(),
+                      [](const Insert &a, const Insert &b) { return a.line_idx < b.line_idx; });
+            const std::size_t inserts_before = inserts.size();
 
-            // Find the line at the critical event's time.
-            std::size_t j = 0;
-            for (; j < front.lines.size(); ++j) {
-                if (front.lines[j].start_time >= crit.global_time)
-                    break;
+            for (const auto &crit : critical_events) {
+                if (crit.global_time > front_total_time)
+                    continue;
+
+                // Find the line at the critical event's time.
+                std::size_t j = 0;
+                for (; j < front.lines.size(); ++j) {
+                    if (front.lines[j].start_time >= crit.global_time)
+                        break;
+                }
+                if (j >= front.lines.size())
+                    j = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
+
+                // Find preceding setpoint from ALL sorted inserts (flow + previous critical).
+                int preceding_sp = last_emitted_temp;
+                for (std::size_t k = 0; k < inserts_before; ++k) {
+                    if (inserts[k].line_idx <= j)
+                        preceding_sp = inserts[k].temp;
+                    else
+                        break;
+                }
+
+                if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
+                    continue;
+
+                // Compute tau from actual preceding setpoint and insert before the event.
+                const float tau = compute_tau(preceding_sp, crit.required_T, heat_speed, cool_speed);
+                const float ins_time = std::max(0.f, crit.global_time - tau);
+                std::size_t j2 = 0;
+                for (; j2 < front.lines.size(); ++j2) {
+                    if (front.lines[j2].start_time >= ins_time)
+                        break;
+                }
+                if (j2 >= front.lines.size())
+                    j2 = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
+
+                inserts.push_back({ j2, crit.required_T });
             }
-            if (j >= front.lines.size())
-                j = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
 
-            // Find preceding setpoint from sorted flow inserts.
-            int preceding_sp = last_emitted_temp;
-            for (std::size_t k = 0; k < flow_inserts_end; ++k) {
-                if (inserts[k].line_idx <= j)
-                    preceding_sp = inserts[k].temp;
-                else
-                    break;
-            }
-
-            if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
-                continue;
-
-            // Compute tau from actual preceding setpoint and insert before the event.
-            const float tau = compute_tau(preceding_sp, crit.required_T, heat_speed, cool_speed);
-            const float ins_time = std::max(0.f, crit.global_time - tau);
-            std::size_t j2 = 0;
-            for (; j2 < front.lines.size(); ++j2) {
-                if (front.lines[j2].start_time >= ins_time)
-                    break;
-            }
-            if (j2 >= front.lines.size())
-                j2 = front.lines.size() > 0 ? front.lines.size() - 1 : 0;
-
-            inserts.push_back({ j2, crit.required_T });
+            // Stop if no new inserts were added.
+            if (inserts.size() == inserts_before)
+                break;
         }
 
         // Pass 2: Process critical events in future layers that need preheat in the front layer.
