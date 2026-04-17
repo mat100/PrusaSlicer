@@ -60,7 +60,6 @@ const std::vector<std::string> GCodeProcessor::Reserved_Tags = {
     "COLOR_CHANGE",
     "PAUSE_PRINT",
     "CUSTOM_GCODE",
-    "_PREDICTIVE_TEMP:",
     "_GP_FIRST_LINE_M73_PLACEHOLDER",
     "_GP_LAST_LINE_M73_PLACEHOLDER",
     "_GP_ESTIMATED_PRINTING_TIME_PLACEHOLDER"
@@ -653,6 +652,8 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
     m_extruder_temps.resize(extruders_count);
     m_extruder_temps_config.resize(extruders_count);
     m_extruder_temps_first_layer_config.resize(extruders_count);
+    m_nozzle_heating_speeds.resize(extruders_count);
+    m_nozzle_cooling_speeds.resize(extruders_count);
     m_is_XL_printer = is_XL_printer(config);
 
     for (size_t i = 0; i < extruders_count; ++ i) {
@@ -664,6 +665,8 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
             // This means the value should be ignored and first layer temp should be used.
             m_extruder_temps_config[i] = m_extruder_temps_first_layer_config[i];
         }
+        m_nozzle_heating_speeds[i]      = static_cast<float>(config.nozzle_heating_speed.get_at(i));
+        m_nozzle_cooling_speeds[i]      = static_cast<float>(config.nozzle_cooling_speed.get_at(i));
         m_result.filament_diameters[i]  = static_cast<float>(config.filament_diameter.get_at(i));
         m_result.filament_densities[i]  = static_cast<float>(config.filament_density.get_at(i));
         m_result.filament_cost[i]       = static_cast<float>(config.filament_cost.get_at(i));
@@ -1395,6 +1398,7 @@ void GCodeProcessor::finalize(bool perform_post_process)
     }
 
     calculate_time(m_result);
+    apply_thermal_ramp_model();
 
     // process the time blocks
     for (size_t i = 0; i < static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count); ++i) {
@@ -1928,13 +1932,6 @@ void GCodeProcessor::process_tags(const std::string_view comment, bool producers
                 BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid value for Width (" << comment << ").";
             return;
         }
-    }
-
-    // predictive nozzle temperature tag
-    if (boost::starts_with(comment, reserved_tag(ETags::Predictive_Temperature))) {
-        if (!parse_number(comment.substr(reserved_tag(ETags::Predictive_Temperature).size()), m_predictive_temp))
-            BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid value for Predictive_Temperature (" << comment << ").";
-        return;
     }
 
     // color change tag
@@ -4556,15 +4553,11 @@ void GCodeProcessor::store_move_vertex(EMoveType type, bool internal_only)
         m_height,
         m_mm3_per_mm,
         m_fan_speed,
-        (m_predictive_temp > 0.f) ? m_predictive_temp : m_extruder_temps[m_extruder_id],
+        m_extruder_temps[m_extruder_id],
         { 0.0f, 0.0f }, // time
         std::max<unsigned int>(1, m_layer_id) - 1,
         internal_only
     });
-
-    // Reset predictive temperature override after it has been consumed.
-    if (m_predictive_temp > 0.f)
-        m_predictive_temp = -1.f;
 
     // stores stop time placeholders for later use
     if (type == EMoveType::Color_change || type == EMoveType::Pause_Print) {
@@ -4735,6 +4728,60 @@ void GCodeProcessor::process_filaments(CustomGCode::Type code)
 
     if (code == CustomGCode::ToolChange)
         m_used_filaments.process_extruder_cache(m_extruder_id);
+}
+
+void GCodeProcessor::apply_thermal_ramp_model()
+{
+    if (m_nozzle_heating_speeds.empty() || m_result.moves.empty())
+        return;
+
+    float ramp_from_T     = -1.f;  // estimated physical nozzle temperature
+    float ramp_target_T   = -1.f;  // current M104/M109 setpoint
+    float ramp_time       =  0.f;  // cumulative time at last setpoint change
+    float cumulative_time =  0.f;
+
+    for (auto &move : m_result.moves) {
+        cumulative_time += move.time[0];
+
+        const float setpoint = move.temperature;
+        if (setpoint <= 0.f)
+            continue;
+
+        // Detect setpoint change (M104 was issued before this move).
+        if (std::abs(setpoint - ramp_target_T) >= 0.5f) {
+            // Advance physical temp estimate up to the moment of the setpoint change.
+            if (ramp_from_T >= 0.f && ramp_target_T > 0.f) {
+                const float elapsed = cumulative_time - ramp_time;
+                const float delta   = ramp_target_T - ramp_from_T;
+                const float speed   = (delta > 0.f)
+                    ? m_nozzle_heating_speeds[move.extruder_id]
+                    : m_nozzle_cooling_speeds[move.extruder_id];
+                if (std::abs(delta) >= 0.5f && speed > 0.f)
+                    ramp_from_T += std::copysign(std::min(std::abs(delta), speed * elapsed), delta);
+                else
+                    ramp_from_T = ramp_target_T;
+            } else {
+                ramp_from_T = setpoint;
+            }
+            ramp_target_T = setpoint;
+            ramp_time     = cumulative_time;
+        }
+
+        // Compute estimated physical temperature for this move.
+        if (ramp_from_T >= 0.f) {
+            const float elapsed = cumulative_time - ramp_time;
+            const float delta   = ramp_target_T - ramp_from_T;
+            if (std::abs(delta) < 0.5f)
+                move.temperature = ramp_target_T;
+            else {
+                const float speed = (delta > 0.f)
+                    ? m_nozzle_heating_speeds[move.extruder_id]
+                    : m_nozzle_cooling_speeds[move.extruder_id];
+                move.temperature = ramp_from_T +
+                    std::copysign(std::min(std::abs(delta), speed * elapsed), delta);
+            }
+        }
+    }
 }
 
 void GCodeProcessor::calculate_time(GCodeProcessorResult& result, size_t keep_last_n_blocks, float additional_time)

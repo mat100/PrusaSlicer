@@ -360,14 +360,14 @@ static std::string schedule_and_emit(
             const float tau = compute_tau(sp, line.target_T, heat_speed, cool_speed);
             const std::size_t j = find_line_at_time(front.lines, std::max(0.f, line.start_time - tau));
 
-            // Don't insert if it would conflict with an existing insert.
-            bool conflicts = false;
-            for (const auto &ins : inserts) {
-                if (ins.line_idx == j) { conflicts = true; break; }
+            // If an insert already exists at this line, replace it with the
+            // later (more urgent) target — its segment comes sooner in time.
+            bool replaced = false;
+            for (auto &ins : inserts) {
+                if (ins.line_idx == j) { ins.temp = line.target_T; replaced = true; break; }
             }
-            if (conflicts) continue;
-
-            inserts.push_back({ j, line.target_T });
+            if (! replaced)
+                inserts.push_back({ j, line.target_T });
             sp = line.target_T;
         }
     }
@@ -435,6 +435,8 @@ static std::string schedule_and_emit(
 
             inserts.push_back({ find_line_at_time(front.lines, std::max(0.f, insertion_time)),
                                 crit.required_T });
+            // Update end_sp so subsequent future events see the correct preceding setpoint.
+            end_sp = crit.required_T;
         }
 
         // Final sort + dedup for output assembly.
@@ -451,17 +453,10 @@ static std::string schedule_and_emit(
         }
     }
 
-    // Step 4: Assemble output with thermal ramp model for preview.
-    // _PREDICTIVE_TEMP tags show the estimated physical nozzle temperature,
-    // accounting for heating/cooling ramp time after each M104 command.
+    // Step 4: Assemble output — insert M104 commands at scheduled positions.
+    // The thermal ramp model for preview is applied later by GCodeProcessor.
     std::string out;
-    out.reserve(front.gcode.size() + inserts.size() * 48u + front.lines.size() * 24u);
-
-    // Thermal ramp state.  Initialize from last_emitted_temp — if unknown (-1),
-    // we skip emitting tags until the first M104 establishes a known temperature.
-    float ramp_from_T     = (last_emitted_temp >= 0) ? float(last_emitted_temp) : -1.f;
-    float ramp_target_T   = ramp_from_T;
-    float ramp_start_time = 0.f;
+    out.reserve(front.gcode.size() + inserts.size() * 48u);
 
     std::size_t next_ins = 0;
     for (std::size_t i = 0; i < front.lines.size(); ++i) {
@@ -470,41 +465,8 @@ static std::string schedule_and_emit(
             std::snprintf(buf, sizeof(buf), "M104 S%d ; predictive nozzle temperature\n",
                           inserts[next_ins].temp);
             out.append(buf);
-
-            // Update ramp model: compute current estimated temperature, then start
-            // ramping toward the new setpoint.
-            if (ramp_from_T >= 0.f) {
-                const float elapsed = front.lines[i].start_time - ramp_start_time;
-                const float delta = ramp_target_T - ramp_from_T;
-                const float speed = (delta > 0.f) ? heat_speed : cool_speed;
-                if (std::abs(delta) < 0.5f || speed <= 0.f)
-                    ramp_from_T = ramp_target_T;
-                else
-                    ramp_from_T += std::copysign(std::min(std::abs(delta), speed * elapsed), delta);
-            } else {
-                // First M104 ever — assume nozzle is already at this temperature.
-                ramp_from_T = float(inserts[next_ins].temp);
-            }
-            ramp_target_T   = float(inserts[next_ins].temp);
-            ramp_start_time = front.lines[i].start_time;
             last_emitted_temp = inserts[next_ins].temp;
             ++next_ins;
-        }
-
-        // Emit estimated physical nozzle temperature for preview.
-        if (front.lines[i].target_T >= 0 && ramp_from_T >= 0.f) {
-            const float elapsed = front.lines[i].start_time - ramp_start_time;
-            const float delta = ramp_target_T - ramp_from_T;
-            float est_T;
-            if (std::abs(delta) < 0.5f) {
-                est_T = ramp_target_T;
-            } else {
-                const float speed = (delta > 0.f) ? heat_speed : cool_speed;
-                est_T = ramp_from_T + std::copysign(std::min(std::abs(delta), speed * elapsed), delta);
-            }
-            char buf[48];
-            std::snprintf(buf, sizeof(buf), ";_PREDICTIVE_TEMP:%d\n", int(std::lround(est_T)));
-            out.append(buf);
         }
         if (! front.lines[i].suppress)
             out.append(front.lines[i].text.data(), front.lines[i].text.size());
@@ -555,10 +517,9 @@ std::string PredictiveTemperatureBuffer::process_layer(std::string &&gcode, std:
     if (new_layer.has_toolchange) {
         result = flush_pending();
         // Emit the toolchange layer as-is (no predictive scheduling across toolchange).
-        for (const auto &line : new_layer.lines) {
-            if (! line.suppress)
-                result.append(line.text.data(), line.text.size());
-        }
+        // Don't suppress M104 here — toolchange temperature commands must be preserved.
+        for (const auto &line : new_layer.lines)
+            result.append(line.text.data(), line.text.size());
         return result;
     }
 

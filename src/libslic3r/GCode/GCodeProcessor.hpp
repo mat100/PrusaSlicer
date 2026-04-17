@@ -185,7 +185,6 @@ namespace Slic3r {
             Color_Change,
             Pause_Print,
             Custom_Code,
-            Predictive_Temperature,
             First_Line_M73_Placeholder,
             Last_Line_M73_Placeholder,
             Estimated_Printing_Time_Placeholder
@@ -528,9 +527,8 @@ namespace Slic3r {
         ExtruderTemps m_extruder_temps;
         ExtruderTemps m_extruder_temps_config;
         ExtruderTemps m_extruder_temps_first_layer_config;
-        // Predictive nozzle temperature override for preview display.
-        // When > 0, overrides m_extruder_temps in store_move_vertex(); reset after use.
-        float m_predictive_temp { -1.f };
+        std::vector<float> m_nozzle_heating_speeds;
+        std::vector<float> m_nozzle_cooling_speeds;
         bool  m_is_XL_printer = false;
         float m_parking_position;
         float m_extra_loading_move;
@@ -778,6 +776,12 @@ namespace Slic3r {
         void process_filaments(CustomGCode::Type code);
 
         void calculate_time(GCodeProcessorResult& result, size_t keep_last_n_blocks = 0, float additional_time = 0.0f);
+
+        // Post-process move vertices to apply a linear thermal ramp model.
+        // Replaces instantaneous M104 setpoints with estimated physical nozzle
+        // temperatures, accounting for heating/cooling speed.  Must be called
+        // after calculate_time() so that move times are populated.
+        void apply_thermal_ramp_model();
 
         // Simulates firmware st_synchronize() call
         void simulate_st_synchronize(float additional_time = 0.0f);
