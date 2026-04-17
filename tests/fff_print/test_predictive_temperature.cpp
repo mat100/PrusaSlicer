@@ -71,9 +71,22 @@ void require_ordered(const std::string &text, const std::initializer_list<std::s
     size_t pos = 0;
     for (const std::string &needle : needles) {
         const size_t found = text.find(needle, pos);
+        INFO("Ordered needle: " << needle);
+        INFO(text);
         REQUIRE(found != std::string::npos);
         pos = found + needle.size();
     }
+}
+
+size_t count_occurrences(const std::string &text, const std::string &needle)
+{
+    size_t count = 0;
+    size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        ++count;
+        pos += needle.size();
+    }
+    return count;
 }
 
 } // namespace
@@ -462,6 +475,135 @@ TEST_CASE("Predictive temperature cooling tau controls whether long infill may b
     }
 }
 
+TEST_CASE("Predictive temperature cooling tau moves return to critical earlier when cooling is slower", "[PredictiveTemperature][Tau]")
+{
+    const std::string first_travel = "G1 X100 F600\n";
+    const std::string second_travel = "G1 X120 F600\n";
+    const std::string third_travel = "G1 X140 F600\n";
+    const std::string external_role = role_tag(GCodeExtrusionRole::ExternalPerimeter);
+    const std::string gcode =
+        "M109 S200\n" +
+        role_tag(GCodeExtrusionRole::InternalInfill) +
+        width_height_tags +
+        "G1 X80 E2 F300\n" +   // 250 C flow target.
+        first_travel +
+        ";AFTER_FIRST_COOLING_TRAVEL\n" +
+        second_travel +
+        ";AFTER_SECOND_COOLING_TRAVEL\n" +
+        third_travel +
+        ";AFTER_THIRD_COOLING_TRAVEL\n" +
+        external_role +
+        "G1 X150 E3 F60\n";    // 210 C critical target.
+
+    {
+        GCodeGenerator gcodegen;
+        auto config = predictive_temperature_config();
+        config.set_deserialize_strict({ { "nozzle_cooling_speed", 20 } }); // 40 C delta => 2 s tau.
+        auto buffer = make_predictive_temperature_buffer(gcodegen, config);
+        const std::string out = process_all(*buffer, gcode);
+
+        require_ordered(out, {
+            third_travel,
+            "M104 S210 ; predictive nozzle temperature\n",
+            ";AFTER_THIRD_COOLING_TRAVEL\n",
+            external_role
+        });
+    }
+
+    {
+        GCodeGenerator gcodegen;
+        auto config = predictive_temperature_config();
+        config.set_deserialize_strict({ { "nozzle_cooling_speed", 5 } }); // 40 C delta => 8 s tau.
+        auto buffer = make_predictive_temperature_buffer(gcodegen, config);
+        const std::string out = process_all(*buffer, gcode);
+
+        require_ordered(out, {
+            "M104 S250 ; predictive nozzle temperature\n",
+            "M104 S210 ; predictive nozzle temperature\n",
+            first_travel,
+            ";AFTER_FIRST_COOLING_TRAVEL\n"
+        });
+    }
+}
+
+TEST_CASE("Predictive temperature heating recovery controls low-flow cooling before a hot critical feature", "[PredictiveTemperature][Tau]")
+{
+    const std::string low_flow_move = "G1 X25 E15 F60\n";
+    const std::string recovery_travel = "G1 X35 F600\n";
+    const std::string external_role = role_tag(GCodeExtrusionRole::ExternalPerimeter);
+    const std::string gcode =
+        "M109 S200\n" +
+        external_role +
+        width_height_tags +
+        "G1 X10 E1 F300\n" +   // 250 C critical target.
+        role_tag(GCodeExtrusionRole::InternalInfill) +
+        low_flow_move +         // 210 C flow target.
+        ";AFTER_LOW_FLOW\n" +
+        recovery_travel +
+        ";AFTER_HEATING_RECOVERY_TRAVEL\n" +
+        external_role +
+        "G1 X45 E3 F300\n";     // 250 C critical target.
+
+    {
+        GCodeGenerator gcodegen;
+        auto config = predictive_temperature_config();
+        config.set_deserialize_strict({ { "nozzle_heating_speed", 30 } }); // 40 C delta => 1.33 s tau.
+        auto buffer = make_predictive_temperature_buffer(gcodegen, config);
+        const std::string out = process_all(*buffer, gcode);
+
+        require_ordered(out, {
+            "M104 S250 ; predictive nozzle temperature\n",
+            "M104 S210 ; predictive nozzle temperature\n",
+            "M104 S250 ; predictive nozzle temperature\n",
+            ";AFTER_LOW_FLOW\n",
+            recovery_travel,
+            ";AFTER_HEATING_RECOVERY_TRAVEL\n"
+        });
+    }
+
+    {
+        GCodeGenerator gcodegen;
+        auto config = predictive_temperature_config();
+        config.set_deserialize_strict({ { "nozzle_heating_speed", 2 } }); // 40 C delta => 20 s tau, too slow.
+        auto buffer = make_predictive_temperature_buffer(gcodegen, config);
+        const std::string out = process_all(*buffer, gcode);
+
+        CHECK(out.find("M104 S210 ; predictive nozzle temperature") == std::string::npos);
+        CHECK(count_occurrences(out, "M104 S250 ; predictive nozzle temperature") == 1);
+    }
+}
+
+TEST_CASE("Predictive temperature blocks boundary flow change when recovery tau exceeds exact critical window", "[PredictiveTemperature][Tau]")
+{
+    const std::string short_flow = "G1 X20 E2 F300\n";
+    const std::string external_role = role_tag(GCodeExtrusionRole::ExternalPerimeter);
+    const std::string gcode =
+        "M109 S200\n" +
+        external_role +
+        width_height_tags +
+        "G1 X10 E1 F60\n" +    // 210 C critical target.
+        role_tag(GCodeExtrusionRole::InternalInfill) +
+        short_flow +            // 250 C flow target, but its cooling recovery needs 8 s.
+        ";AFTER_SHORT_FLOW\n" +
+        "G1 X25 F600\n" +
+        ";BEFORE_NEXT_CRITICAL\n" +
+        external_role +
+        "G1 X35 E3 F60\n";      // 210 C critical target.
+
+    GCodeGenerator gcodegen;
+    auto buffer = make_predictive_temperature_buffer(gcodegen, predictive_temperature_config());
+    const std::string out = process_all(*buffer, gcode);
+
+    CHECK(out.find("M104 S250 ; predictive nozzle temperature") == std::string::npos);
+    require_ordered(out, {
+        "M104 S210 ; predictive nozzle temperature\n",
+        external_role,
+        ";AFTER_SHORT_FLOW\n",
+        ";BEFORE_NEXT_CRITICAL\n",
+        external_role
+    });
+}
+
 TEST_CASE("Predictive temperature handles bridge to infill to critical perimeter sequence", "[PredictiveTemperature]")
 {
     GCodeGenerator gcodegen;
@@ -549,6 +691,89 @@ TEST_CASE("Predictive temperature handles Benchy first-layer external perimeter 
     CHECK(out.find("M104 S247 ; predictive nozzle temperature") == std::string::npos);
 }
 
+TEST_CASE("Predictive temperature handles Benchy rapid perimeter external perimeter alternation", "[PredictiveTemperature][BenchyDerived]")
+{
+    GCodeGenerator gcodegen;
+    auto buffer = make_predictive_temperature_buffer(gcodegen, predictive_temperature_config());
+
+    const std::string perimeter_role = role_tag(GCodeExtrusionRole::Perimeter);
+    const std::string external_role = role_tag(GCodeExtrusionRole::ExternalPerimeter);
+    const std::string gcode =
+        "M109 S200\n" +
+        // Benchy final smokestack layers repeatedly alternate wide perimeter loops
+        // with narrow external loops. These short non-critical perimeter pieces
+        // must not pull temperature away from the next external perimeter.
+        perimeter_role +
+        width_height_tags_for(0.622283, 0.2) +
+        "G1 F1200\n"
+        "G1 X1 E1\n" +
+        external_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 F1200\n"
+        "G1 X2 E2\n" +
+        perimeter_role +
+        width_height_tags_for(0.619720, 0.2) +
+        "G1 F1200\n"
+        "G1 X3 E3\n" +
+        external_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 F1200\n"
+        "G1 X4 E4\n" +
+        perimeter_role +
+        width_height_tags_for(0.622280, 0.2) +
+        "G1 F1200\n"
+        "G1 X5 E5\n" +
+        external_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 F1200\n"
+        "G1 X6 E6\n";
+
+    const std::string out = process_all(*buffer, gcode);
+
+    CHECK(out.find("M104 S225 ; predictive nozzle temperature") == std::string::npos);
+    CHECK(count_occurrences(out, "M104 S218 ; predictive nozzle temperature") == 1);
+    require_ordered(out, {
+        "M104 S218 ; predictive nozzle temperature\n",
+        external_role
+    });
+}
+
+TEST_CASE("Predictive temperature allows a Benchy long perimeter loop when external recovery is possible", "[PredictiveTemperature][BenchyDerived]")
+{
+    GCodeGenerator gcodegen;
+    auto buffer = make_predictive_temperature_buffer(gcodegen, predictive_temperature_config());
+
+    const std::string perimeter_role = role_tag(GCodeExtrusionRole::Perimeter);
+    const std::string external_role = role_tag(GCodeExtrusionRole::ExternalPerimeter);
+    const std::string long_perimeter = "G1 X80 E1 F1200\n";
+    const std::string recovery_travel = "G1 X92 F1200\n";
+    const std::string gcode =
+        "M109 S200\n" +
+        external_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 X10 E1 F1200\n" +
+        perimeter_role +
+        width_height_tags_for(0.622283, 0.2) +
+        long_perimeter +
+        ";AFTER_LONG_PERIMETER\n" +
+        recovery_travel +
+        external_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 X102 E3 F1200\n";
+
+    const std::string out = process_all(*buffer, gcode);
+
+    require_ordered(out, {
+        "M104 S218 ; predictive nozzle temperature\n",
+        external_role,
+        "M104 S225 ; predictive nozzle temperature\n",
+        "M104 S218 ; predictive nozzle temperature\n",
+        ";AFTER_LONG_PERIMETER\n",
+        recovery_travel,
+        external_role
+    });
+}
+
 TEST_CASE("Predictive temperature handles Benchy solid bridge solid perimeter external chain", "[PredictiveTemperature][BenchyDerived]")
 {
     GCodeGenerator gcodegen;
@@ -587,6 +812,42 @@ TEST_CASE("Predictive temperature handles Benchy solid bridge solid perimeter ex
     REQUIRE(external != std::string::npos);
 }
 
+TEST_CASE("Predictive temperature ignores Benchy bridge between critical external and top solid", "[PredictiveTemperature][BenchyDerived]")
+{
+    GCodeGenerator gcodegen;
+    auto buffer = make_predictive_temperature_buffer(gcodegen, predictive_temperature_config());
+
+    const std::string external_role = role_tag(GCodeExtrusionRole::ExternalPerimeter);
+    const std::string top_role = role_tag(GCodeExtrusionRole::TopSolidInfill);
+    const std::string bridge_role = role_tag(GCodeExtrusionRole::BridgeInfill);
+    const std::string gcode =
+        "M109 S200\n" +
+        external_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 F1200\n"
+        "G1 X20 E1\n" +      // 218 C critical external perimeter.
+        bridge_role +
+        width_height_tags_for(0.531415, 0.4) +
+        "G1 F3000\n"
+        "G1 X60 E2\n" +      // Would clamp high if bridge flow were used.
+        top_role +
+        width_height_tags_for(0.421399, 0.2) +
+        "G1 F1200\n"
+        "G1 X80 E3\n";       // 217 C critical top solid infill.
+
+    const std::string out = process_all(*buffer, gcode);
+
+    CHECK(out.find("M104 S260 ; predictive nozzle temperature") == std::string::npos);
+    const size_t external = out.find("M104 S218 ; predictive nozzle temperature");
+    const size_t top = out.find("M104 S217 ; predictive nozzle temperature");
+    const size_t bridge = out.find(bridge_role);
+    REQUIRE(external != std::string::npos);
+    REQUIRE(top != std::string::npos);
+    REQUIRE(bridge != std::string::npos);
+    CHECK(external < bridge);
+    CHECK(bridge < top);
+}
+
 TEST_CASE("Predictive temperature handles Benchy overhang external alternation", "[PredictiveTemperature][BenchyDerived]")
 {
     GCodeGenerator gcodegen;
@@ -619,6 +880,52 @@ TEST_CASE("Predictive temperature handles Benchy overhang external alternation",
 
     CHECK(out.find("M104 S260 ; predictive nozzle temperature") == std::string::npos);
     CHECK(out.find("M104 S218 ; predictive nozzle temperature") != std::string::npos);
+}
+
+TEST_CASE("Predictive temperature keeps Benchy external targets through overhang islands", "[PredictiveTemperature][BenchyDerived]")
+{
+    GCodeGenerator gcodegen;
+    auto buffer = make_predictive_temperature_buffer(gcodegen, predictive_temperature_config());
+
+    const std::string external_role = role_tag(GCodeExtrusionRole::ExternalPerimeter);
+    const std::string overhang_role = role_tag(GCodeExtrusionRole::OverhangPerimeter);
+    const std::string gcode =
+        "M109 S200\n" +
+        external_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 F2010\n"
+        "G1 X30 E1\n" +
+        overhang_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 F900\n"
+        "G1 X32 E2\n"
+        "G1 X34 E3\n" +
+        external_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 F2010\n"
+        "G1 X64 E4\n" +
+        overhang_role +
+        width_height_tags_for(0.531415, 0.4) +
+        "G1 F3000\n"
+        "G1 X66 E5\n"
+        "G1 X68 E6\n" +
+        external_role +
+        width_height_tags_for(0.449999, 0.2) +
+        "G1 F2010\n"
+        "G1 X98 E7\n";
+
+    const std::string out = process_all(*buffer, gcode);
+
+    CHECK(out.find("M104 S260 ; predictive nozzle temperature") == std::string::npos);
+    CHECK(count_occurrences(out, "M104 S230 ; predictive nozzle temperature") == 1);
+    require_ordered(out, {
+        "M104 S230 ; predictive nozzle temperature\n",
+        external_role,
+        overhang_role,
+        external_role,
+        overhang_role,
+        external_role
+    });
 }
 
 TEST_CASE("Predictive temperature handles Benchy final layer perimeter external top-solid sequence", "[PredictiveTemperature][BenchyDerived]")
@@ -656,4 +963,32 @@ TEST_CASE("Predictive temperature handles Benchy final layer perimeter external 
     REQUIRE(top_tag != std::string::npos);
     CHECK(external < top_tag);
     CHECK(top_slow < top_fast);
+}
+
+TEST_CASE("Predictive temperature handles Benchy top solid mixed-speed critical strokes", "[PredictiveTemperature][BenchyDerived]")
+{
+    GCodeGenerator gcodegen;
+    auto buffer = make_predictive_temperature_buffer(gcodegen, predictive_temperature_config());
+
+    const std::string top_role = role_tag(GCodeExtrusionRole::TopSolidInfill);
+    const std::string gcode =
+        "M109 S200\n" +
+        top_role +
+        width_height_tags_for(0.424476, 0.2) +
+        "G1 F1200\n"
+        "G1 X20 E1\n" +      // Benchy final layer slow top-solid stroke: 217 C.
+        "G1 X70 F600\n" +    // Heating time for the following fast critical stroke.
+        "G1 F6000\n"
+        "G1 X120 E2\n" +     // Same top-solid role, fast stroke clamps high.
+        "G1 X220 F600\n" +   // Cooling time before returning to the slow critical stroke.
+        "G1 F1200\n"
+        "G1 X240 E3\n";      // Critical role must return to the slow-stroke target.
+
+    const std::string out = process_all(*buffer, gcode);
+
+    require_ordered(out, {
+        "M104 S217 ; predictive nozzle temperature\n",
+        "M104 S260 ; predictive nozzle temperature\n",
+        "M104 S217 ; predictive nozzle temperature\n"
+    });
 }

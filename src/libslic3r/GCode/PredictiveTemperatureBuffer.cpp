@@ -330,7 +330,8 @@ static std::string schedule_and_emit(
 
     // Step 1: Collect all critical events across the entire buffer as a global timeline.
     struct CriticalEvent {
-        float global_time;
+        float start_time;
+        float end_time;
         int   required_T;
     };
     std::vector<CriticalEvent> critical_events;
@@ -339,7 +340,7 @@ static std::string schedule_and_emit(
     for (const auto &layer : buffer) {
         for (const auto &line : layer.lines) {
             if (line.priority == TemperaturePriority::Critical && line.target_T >= 0)
-                critical_events.push_back({ cumulative_time + line.start_time, line.target_T });
+                critical_events.push_back({ cumulative_time + line.start_time, cumulative_time + line.start_time + line.duration, line.target_T });
         }
         cumulative_time += layer.total_time;
     }
@@ -373,6 +374,34 @@ static std::string schedule_and_emit(
         return sp;
     };
 
+    auto effective_setpoint_strictly_before = [&inserts, &sort_inserts, last_emitted_temp](std::size_t line_idx) {
+        sort_inserts(inserts);
+        int sp = last_emitted_temp;
+        for (const Insert &insert : inserts) {
+            if (insert.line_idx >= line_idx)
+                break;
+            sp = insert.temp;
+        }
+        return sp;
+    };
+
+    auto after_protected_critical = [&critical_events, hysteresis](float insertion_time, int target_T) {
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (const CriticalEvent &crit : critical_events) {
+                if (std::abs(crit.required_T - target_T) < hysteresis)
+                    continue;
+                if (insertion_time + 1e-3f >= crit.start_time && insertion_time < crit.end_time - 1e-3f) {
+                    insertion_time = crit.end_time;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        return insertion_time;
+    };
+
     // Step 2: Critical targets are scheduled first and reserve the setpoint timeline.
     int critical_sp = last_emitted_temp;
     for (const CriticalEvent &crit : critical_events) {
@@ -380,13 +409,13 @@ static std::string schedule_and_emit(
             continue;
 
         const float tau = compute_tau(critical_sp, crit.required_T, heat_speed, cool_speed);
-        const float insertion_time = std::max(0.f, crit.global_time - tau);
+        const float insertion_time = after_protected_critical(std::max(0.f, crit.start_time - tau), crit.required_T);
         if (insertion_time <= front_total_time) {
             inserts.push_back({
                 find_line_at_time(front.lines, insertion_time),
                 crit.required_T,
                 TemperaturePriority::Critical,
-                crit.global_time
+                crit.start_time
             });
             critical_sp = crit.required_T;
         }
@@ -407,18 +436,22 @@ static std::string schedule_and_emit(
         if (preceding_sp >= 0 && std::abs(line.target_T - preceding_sp) < hysteresis)
             continue;
 
+        const float protected_insertion_time = after_protected_critical(insertion_time, line.target_T);
+        if (protected_insertion_time > line.start_time + 1e-3f)
+            continue;
+
         auto next_critical = std::lower_bound(
-            critical_events.begin(), critical_events.end(), insertion_time,
-            [](const CriticalEvent &event, float t) { return event.global_time < t; });
+            critical_events.begin(), critical_events.end(), protected_insertion_time,
+            [](const CriticalEvent &event, float t) { return event.start_time < t; });
         if (next_critical != critical_events.end()) {
-            const float time_to_critical = next_critical->global_time - insertion_time;
+            const float time_to_critical = next_critical->start_time - protected_insertion_time;
             const float recovery_tau = compute_tau(line.target_T, next_critical->required_T, heat_speed, cool_speed);
             if (recovery_tau > time_to_critical + 1e-3f)
                 continue;
         }
 
         inserts.push_back({
-            insertion_idx,
+            find_line_at_time(front.lines, protected_insertion_time),
             line.target_T,
             TemperaturePriority::FlowControlled,
             line.start_time
@@ -432,21 +465,21 @@ static std::string schedule_and_emit(
     for (int pass = 0; pass < 3; ++pass) {
         const std::size_t inserts_before = inserts.size();
         for (const CriticalEvent &crit : critical_events) {
-            if (crit.global_time > front_total_time)
+            if (crit.start_time > front_total_time)
                 continue;
 
-            const std::size_t critical_idx = find_line_at_time(front.lines, crit.global_time);
-            const int preceding_sp = effective_setpoint_before(critical_idx);
+            const std::size_t critical_idx = find_line_at_time(front.lines, crit.start_time);
+            const int preceding_sp = effective_setpoint_strictly_before(critical_idx);
             if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
                 continue;
 
             const float tau = compute_tau(preceding_sp, crit.required_T, heat_speed, cool_speed);
-            const float insertion_time = std::max(0.f, crit.global_time - tau);
+            const float insertion_time = after_protected_critical(std::max(0.f, crit.start_time - tau), crit.required_T);
             inserts.push_back({
                 find_line_at_time(front.lines, insertion_time),
                 crit.required_T,
                 TemperaturePriority::Critical,
-                crit.global_time
+                crit.start_time
             });
         }
 
