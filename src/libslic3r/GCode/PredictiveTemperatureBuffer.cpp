@@ -440,14 +440,17 @@ static std::string schedule_and_emit(
         }
 
         // Final sort + dedup for output assembly.
+        // When multiple inserts land on the same line_idx, keep the first
+        // (earliest event).  A later critical event's preheat may have been
+        // placed at the same position as an earlier event's, but the earlier
+        // event prints first and needs its temperature satisfied.
         sort_inserts(inserts);
         if (inserts.size() > 1) {
             auto out = inserts.begin();
             for (auto it = inserts.begin() + 1; it != inserts.end(); ++it) {
-                if (it->line_idx == out->line_idx)
-                    out->temp = it->temp;
-                else
+                if (it->line_idx != out->line_idx)
                     *(++out) = *it;
+                // else: skip — keep first (earlier event's temp)
             }
             inserts.erase(out + 1, inserts.end());
         }
