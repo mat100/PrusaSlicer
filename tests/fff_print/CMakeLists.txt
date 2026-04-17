@@ -32,6 +32,7 @@ add_executable(${_TEST_NAME}_tests
 	test_perimeters.cpp
 	test_print.cpp
 	test_printgcode.cpp
+	test_predictive_temperature.cpp
 	test_printobject.cpp
     test_retraction.cpp
 	test_shells.cpp

@@ -21,6 +21,12 @@ namespace Slic3r {
 
 namespace {
 
+enum class TemperaturePriority : unsigned char {
+    None,
+    FlowControlled,
+    Critical
+};
+
 // Parse a float suffix after a single-letter axis key (e.g. "X123.4") starting at `p`.
 // On success advances `p` past the number and writes the value into `out`; returns true.
 static bool parse_axis(const char *&p, float &out)
@@ -52,7 +58,7 @@ struct LineInfo {
     float               start_time { 0.f }; // cumulative time from start of this layer
     float               duration   { 0.f }; // time this segment takes
     int                 target_T   { -1 };  // T_base + k_flow * flow, clamped. -1 = non-extrusion
-    bool                is_critical{ false };// ExternalPerimeter or TopSolidInfill
+    TemperaturePriority priority   { TemperaturePriority::None };
     bool                suppress   { false };// existing M104 to suppress
 };
 
@@ -181,7 +187,7 @@ static ParsedLayer parse_layer(
                 layer.lines.push_back(li);
                 // Append remainder verbatim.
                 if (p < end)
-                    layer.lines.push_back(LineInfo{ std::string_view(p, end - p), t_accum, 0.f, -1, false, false });
+                    layer.lines.push_back(LineInfo{ std::string_view(p, end - p), t_accum, 0.f, -1, TemperaturePriority::None, false });
                 p = end;
                 break;
             }
@@ -246,8 +252,10 @@ static ParsedLayer parse_layer(
                     float t = float(t_base) + k_flow * flow;
                     int ti = std::clamp(int(std::lround(t)), t_clamp_lo, t_clamp_hi);
                     li.target_T = ti;
-                    li.is_critical = (role == GCodeExtrusionRole::ExternalPerimeter
-                                   || role == GCodeExtrusionRole::TopSolidInfill);
+                    li.priority = (role == GCodeExtrusionRole::ExternalPerimeter
+                                || role == GCodeExtrusionRole::TopSolidInfill) ?
+                        TemperaturePriority::Critical :
+                        TemperaturePriority::FlowControlled;
                 }
                 x = nx; y = ny; f_mm_min = new_f;
                 layer.lines.push_back(li);
@@ -312,7 +320,7 @@ static std::string schedule_and_emit(
     std::deque<ParsedLayer> &buffer,
     int &last_emitted_temp,
     float heat_speed, float cool_speed, float hysteresis,
-    float tau_max)
+    float /*tau_max*/)
 {
     if (buffer.empty())
         return {};
@@ -330,145 +338,153 @@ static std::string schedule_and_emit(
     float cumulative_time = 0.f;
     for (const auto &layer : buffer) {
         for (const auto &line : layer.lines) {
-            if (line.is_critical && line.target_T >= 0)
+            if (line.priority == TemperaturePriority::Critical && line.target_T >= 0)
                 critical_events.push_back({ cumulative_time + line.start_time, line.target_T });
         }
         cumulative_time += layer.total_time;
     }
 
-    // Step 2: Schedule flow-based M104 for non-critical segments.
-    struct Insert { std::size_t line_idx; int temp; };
+    struct Insert {
+        std::size_t         line_idx;
+        int                 temp;
+        TemperaturePriority priority;
+        float               event_time;
+    };
     std::vector<Insert> inserts;
 
-    {
+    const auto sort_inserts = [](std::vector<Insert> &v) {
+        std::sort(v.begin(), v.end(), [](const Insert &a, const Insert &b) {
+            if (a.line_idx != b.line_idx)
+                return a.line_idx < b.line_idx;
+            if (a.event_time != b.event_time)
+                return a.event_time < b.event_time;
+            return int(a.priority) > int(b.priority);
+        });
+    };
+
+    auto effective_setpoint_before = [&inserts, &sort_inserts, last_emitted_temp](std::size_t line_idx) {
+        sort_inserts(inserts);
         int sp = last_emitted_temp;
-        for (std::size_t i = 0; i < front.lines.size(); ++i) {
-            const auto &line = front.lines[i];
-            if (line.target_T < 0 || line.is_critical)
-                continue;
+        for (const Insert &insert : inserts) {
+            if (insert.line_idx > line_idx)
+                break;
+            sp = insert.temp;
+        }
+        return sp;
+    };
 
-            // Check if there's a critical event within tau_max seconds (binary search).
-            const float line_time = line.start_time;
-            auto ce_it = std::lower_bound(critical_events.begin(), critical_events.end(), line_time,
-                [](const CriticalEvent &e, float t) { return e.global_time < t; });
-            if (ce_it != critical_events.end() && (ce_it->global_time - line_time) <= tau_max)
-                continue; // Critical event dominates, skip natural temp.
+    // Step 2: Critical targets are scheduled first and reserve the setpoint timeline.
+    int critical_sp = last_emitted_temp;
+    for (const CriticalEvent &crit : critical_events) {
+        if (critical_sp >= 0 && std::abs(crit.required_T - critical_sp) < hysteresis)
+            continue;
 
-            if (sp >= 0 && std::abs(line.target_T - sp) < hysteresis)
-                continue;
-
-            const float tau = compute_tau(sp, line.target_T, heat_speed, cool_speed);
-            const std::size_t j = find_line_at_time(front.lines, std::max(0.f, line.start_time - tau));
-
-            // If an insert already exists at this line, replace it with the
-            // later (more urgent) target — its segment comes sooner in time.
-            bool replaced = false;
-            for (auto &ins : inserts) {
-                if (ins.line_idx == j) { ins.temp = line.target_T; replaced = true; break; }
-            }
-            if (! replaced)
-                inserts.push_back({ j, line.target_T });
-            sp = line.target_T;
+        const float tau = compute_tau(critical_sp, crit.required_T, heat_speed, cool_speed);
+        const float insertion_time = std::max(0.f, crit.global_time - tau);
+        if (insertion_time <= front_total_time) {
+            inserts.push_back({
+                find_line_at_time(front.lines, insertion_time),
+                crit.required_T,
+                TemperaturePriority::Critical,
+                crit.global_time
+            });
+            critical_sp = crit.required_T;
         }
     }
 
-    // Step 3: Schedule M104 for critical events, accounting for flow-based and other inserts.
+    // Step 3: Flow-controlled targets are accepted only when they cannot compromise
+    // the next critical target. Bridges and overhangs have no target_T and are ignored
+    // here, though critical preheat may still be inserted across them.
+    for (std::size_t i = 0; i < front.lines.size(); ++i) {
+        const LineInfo &line = front.lines[i];
+        if (line.target_T < 0 || line.priority != TemperaturePriority::FlowControlled)
+            continue;
+
+        const float tau = compute_tau(effective_setpoint_before(i), line.target_T, heat_speed, cool_speed);
+        const float insertion_time = std::max(0.f, line.start_time - tau);
+        const std::size_t insertion_idx = find_line_at_time(front.lines, insertion_time);
+        const int preceding_sp = effective_setpoint_before(insertion_idx);
+        if (preceding_sp >= 0 && std::abs(line.target_T - preceding_sp) < hysteresis)
+            continue;
+
+        auto next_critical = std::lower_bound(
+            critical_events.begin(), critical_events.end(), insertion_time,
+            [](const CriticalEvent &event, float t) { return event.global_time < t; });
+        if (next_critical != critical_events.end()) {
+            const float time_to_critical = next_critical->global_time - insertion_time;
+            const float recovery_tau = compute_tau(line.target_T, next_critical->required_T, heat_speed, cool_speed);
+            if (recovery_tau > time_to_critical + 1e-3f)
+                continue;
+        }
+
+        inserts.push_back({
+            insertion_idx,
+            line.target_T,
+            TemperaturePriority::FlowControlled,
+            line.start_time
+        });
+    }
+
+    // Step 4: Flow-controlled inserts may change the setpoint before a later
+    // critical segment. Repair the critical timeline after accepting flow
+    // inserts so long infill can be used without sacrificing the following
+    // external perimeter or top solid infill.
+    for (int pass = 0; pass < 3; ++pass) {
+        const std::size_t inserts_before = inserts.size();
+        for (const CriticalEvent &crit : critical_events) {
+            if (crit.global_time > front_total_time)
+                continue;
+
+            const std::size_t critical_idx = find_line_at_time(front.lines, crit.global_time);
+            const int preceding_sp = effective_setpoint_before(critical_idx);
+            if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
+                continue;
+
+            const float tau = compute_tau(preceding_sp, crit.required_T, heat_speed, cool_speed);
+            const float insertion_time = std::max(0.f, crit.global_time - tau);
+            inserts.push_back({
+                find_line_at_time(front.lines, insertion_time),
+                crit.required_T,
+                TemperaturePriority::Critical,
+                crit.global_time
+            });
+        }
+
+        if (inserts.size() == inserts_before)
+            break;
+    }
+
+    // Final sort + dedup for output assembly. Critical inserts dominate flow
+    // inserts at the same line; multiple flow inserts at the same line keep the
+    // later target because it is the imminent one.
+    sort_inserts(inserts);
+    if (inserts.size() > 1) {
+        auto out = inserts.begin();
+        for (auto it = inserts.begin() + 1; it != inserts.end(); ++it) {
+            if (it->line_idx != out->line_idx) {
+                *(++out) = *it;
+            } else if (it->priority == TemperaturePriority::Critical && out->priority != TemperaturePriority::Critical) {
+                *out = *it;
+            } else if (it->priority == out->priority && it->priority == TemperaturePriority::FlowControlled) {
+                *out = *it;
+            }
+        }
+        inserts.erase(out + 1, inserts.end());
+    }
+
+    // Remove redundant M104 where temp is within hysteresis of the preceding
+    // effective setpoint. Per-segment feedrate variations from CoolingBuffer
+    // cause 1-2 °C oscillations that the nozzle PID cannot meaningfully track.
     {
-        const auto sort_inserts = [](std::vector<Insert> &v) {
-            std::sort(v.begin(), v.end(),
-                      [](const Insert &a, const Insert &b) { return a.line_idx < b.line_idx; });
-        };
-        sort_inserts(inserts);
-
-        // Iteratively process critical events. Multiple passes needed because a
-        // critical insert (e.g. M104 S211) can change the preceding setpoint for
-        // later events (e.g. S240 that was skipped when preceding_sp = last_emitted).
-        for (int pass = 0; pass < 3; ++pass) {
-            sort_inserts(inserts);
-            const std::size_t inserts_before = inserts.size();
-
-            for (const auto &crit : critical_events) {
-                if (crit.global_time > front_total_time)
-                    continue;
-
-                const std::size_t j = find_line_at_time(front.lines, crit.global_time);
-
-                // Find preceding setpoint from ALL sorted inserts.
-                int preceding_sp = last_emitted_temp;
-                for (std::size_t k = 0; k < inserts_before; ++k) {
-                    if (inserts[k].line_idx <= j)
-                        preceding_sp = inserts[k].temp;
-                    else
-                        break;
-                }
-
-                if (preceding_sp >= 0 && std::abs(crit.required_T - preceding_sp) < hysteresis)
-                    continue;
-
-                const float tau = compute_tau(preceding_sp, crit.required_T, heat_speed, cool_speed);
-                inserts.push_back({ find_line_at_time(front.lines, std::max(0.f, crit.global_time - tau)),
-                                    crit.required_T });
+        int prev_temp = last_emitted_temp;
+        auto out = inserts.begin();
+        for (auto it = inserts.begin(); it != inserts.end(); ++it) {
+            if (prev_temp < 0 || std::abs(it->temp - prev_temp) > hysteresis) {
+                *out++ = *it;
+                prev_temp = it->temp;
             }
-
-            if (inserts.size() == inserts_before)
-                break;
         }
-
-        // Pass 2: Process critical events in future layers that need preheat in the front layer.
-        sort_inserts(inserts);
-        // Find the actual last setpoint from all inserts (highest line_idx = last in sorted order).
-        int end_sp = last_emitted_temp;
-        if (! inserts.empty())
-            end_sp = inserts.back().temp;
-
-        for (const auto &crit : critical_events) {
-            if (crit.global_time <= front_total_time)
-                continue;
-
-            if (end_sp >= 0 && std::abs(crit.required_T - end_sp) < hysteresis)
-                continue;
-
-            const float tau = compute_tau(end_sp, crit.required_T, heat_speed, cool_speed);
-            const float insertion_time = crit.global_time - tau;
-            if (insertion_time > front_total_time)
-                continue;
-
-            inserts.push_back({ find_line_at_time(front.lines, std::max(0.f, insertion_time)),
-                                crit.required_T });
-            // Update end_sp so subsequent future events see the correct preceding setpoint.
-            end_sp = crit.required_T;
-        }
-
-        // Final sort + dedup for output assembly.
-        // When multiple inserts land on the same line_idx, keep the first
-        // (earliest event).  A later critical event's preheat may have been
-        // placed at the same position as an earlier event's, but the earlier
-        // event prints first and needs its temperature satisfied.
-        sort_inserts(inserts);
-        if (inserts.size() > 1) {
-            auto out = inserts.begin();
-            for (auto it = inserts.begin() + 1; it != inserts.end(); ++it) {
-                if (it->line_idx != out->line_idx)
-                    *(++out) = *it;
-                // else: skip — keep first (earlier event's temp)
-            }
-            inserts.erase(out + 1, inserts.end());
-        }
-
-        // Remove redundant M104 where temp is within hysteresis of the preceding
-        // effective setpoint.  Per-segment feedrate variations from CoolingBuffer
-        // cause 1-2 °C oscillations that the nozzle PID cannot meaningfully track.
-        {
-            int prev_temp = last_emitted_temp;
-            auto out = inserts.begin();
-            for (auto it = inserts.begin(); it != inserts.end(); ++it) {
-                if (prev_temp < 0 || std::abs(it->temp - prev_temp) > hysteresis) {
-                    *out++ = *it;
-                    prev_temp = it->temp;
-                }
-            }
-            inserts.erase(out, inserts.end());
-        }
+        inserts.erase(out, inserts.end());
     }
 
     // Step 4: Assemble output — insert M104 commands at scheduled positions.
