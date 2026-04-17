@@ -452,14 +452,14 @@ static std::string schedule_and_emit(
             inserts.erase(out + 1, inserts.end());
         }
 
-        // Remove redundant M104 where temp matches the preceding effective setpoint.
-        // Inserts are sorted by line_idx; two consecutive inserts with the same temp
-        // are redundant because the firmware is already at that setpoint.
+        // Remove redundant M104 where temp is within hysteresis of the preceding
+        // effective setpoint.  Per-segment feedrate variations from CoolingBuffer
+        // cause 1-2 °C oscillations that the nozzle PID cannot meaningfully track.
         {
             int prev_temp = last_emitted_temp;
             auto out = inserts.begin();
             for (auto it = inserts.begin(); it != inserts.end(); ++it) {
-                if (it->temp != prev_temp) {
+                if (prev_temp < 0 || std::abs(it->temp - prev_temp) > hysteresis) {
                     *out++ = *it;
                     prev_temp = it->temp;
                 }
