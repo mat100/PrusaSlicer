@@ -451,6 +451,21 @@ static std::string schedule_and_emit(
             }
             inserts.erase(out + 1, inserts.end());
         }
+
+        // Remove redundant M104 where temp matches the preceding effective setpoint.
+        // Inserts are sorted by line_idx; two consecutive inserts with the same temp
+        // are redundant because the firmware is already at that setpoint.
+        {
+            int prev_temp = last_emitted_temp;
+            auto out = inserts.begin();
+            for (auto it = inserts.begin(); it != inserts.end(); ++it) {
+                if (it->temp != prev_temp) {
+                    *out++ = *it;
+                    prev_temp = it->temp;
+                }
+            }
+            inserts.erase(out, inserts.end());
+        }
     }
 
     // Step 4: Assemble output — insert M104 commands at scheduled positions.
