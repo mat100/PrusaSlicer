@@ -1494,6 +1494,16 @@ Color ViewerImpl::get_vertex_color(const PathVertex& v) const
         return v.is_travel() ? get_option_color(move_type_to_option(v.type)) :
             m_layer_time_range[1].get_color_at(m_layers.get_layer_time(m_settings.time_mode, static_cast<size_t>(v.layer_id)));
     }
+    case EViewType::ToolDockTime:
+    {
+        return v.is_travel() ? get_option_color(move_type_to_option(v.type)) :
+            m_tool_dock_time_range.get_color_at(v.tool_dock_times[static_cast<size_t>(m_settings.time_mode)]);
+    }
+    case EViewType::ToolPrintTime:
+    {
+        return v.is_travel() ? get_option_color(move_type_to_option(v.type)) :
+            m_tool_print_time_range.get_color_at(v.tool_print_times[static_cast<size_t>(m_settings.time_mode)]);
+    }
     case EViewType::Tool:
     {
         assert(static_cast<size_t>(v.extruder_id) < m_tool_colors.size());
@@ -1568,6 +1578,8 @@ const ColorRange& ViewerImpl::get_color_range(EViewType type) const
     case EViewType::ActualVolumetricFlowRate: { return m_actual_volumetric_rate_range; }
     case EViewType::LayerTimeLinear:          { return m_layer_time_range[0]; }
     case EViewType::LayerTimeLogarithmic:     { return m_layer_time_range[1]; }
+    case EViewType::ToolDockTime:             { return m_tool_dock_time_range; }
+    case EViewType::ToolPrintTime:            { return m_tool_print_time_range; }
     default:                                  { return ColorRange::DUMMY_COLOR_RANGE; }
     }
 }
@@ -1586,6 +1598,8 @@ void ViewerImpl::set_color_range_palette(EViewType type, const Palette& palette)
     case EViewType::ActualVolumetricFlowRate: { m_actual_volumetric_rate_range.set_palette(palette); break; }
     case EViewType::LayerTimeLinear:          { m_layer_time_range[0].set_palette(palette);   break; }
     case EViewType::LayerTimeLogarithmic:     { m_layer_time_range[1].set_palette(palette);   break; }
+    case EViewType::ToolDockTime:             { m_tool_dock_time_range.set_palette(palette);  break; }
+    case EViewType::ToolPrintTime:            { m_tool_print_time_range.set_palette(palette); break; }
     default:                                  { break; }
     }
     m_settings.update_colors = true;
@@ -1624,6 +1638,8 @@ size_t ViewerImpl::get_used_cpu_memory() const
     for (size_t i = 0; i < COLOR_RANGE_TYPES_COUNT; ++i) {
         ret += m_layer_time_range[i].size_in_bytes_cpu();
     }
+    ret += m_tool_dock_time_range.size_in_bytes_cpu();
+    ret += m_tool_print_time_range.size_in_bytes_cpu();
     ret += STDVEC_MEMSIZE(m_tool_colors, Color);
     ret += STDVEC_MEMSIZE(m_color_print_colors, Color);
     return ret;
@@ -1760,7 +1776,8 @@ void ViewerImpl::update_color_ranges()
     // as last time, the current ranges are still valid. The recalculation is quite expensive.
     if (m_settings_used_for_ranges.has_value() &&
         m_settings.extrusion_roles_visibility == m_settings_used_for_ranges->extrusion_roles_visibility &&
-        m_settings.options_visibility == m_settings_used_for_ranges->options_visibility)
+        m_settings.options_visibility == m_settings_used_for_ranges->options_visibility &&
+        m_settings.time_mode == m_settings_used_for_ranges->time_mode)
         return;
 
     m_width_range.reset();
@@ -1773,7 +1790,10 @@ void ViewerImpl::update_color_ranges()
     m_actual_volumetric_rate_range.reset();
     m_layer_time_range[0].reset(); // ColorRange::EType::Linear
     m_layer_time_range[1].reset(); // ColorRange::EType::Logarithmic
+    m_tool_dock_time_range.reset();
+    m_tool_print_time_range.reset();
 
+    const size_t time_mode_idx = static_cast<size_t>(m_settings.time_mode);
     for (size_t i = 0; i < m_vertices.size(); i++) {
         const PathVertex& v = m_vertices[i];
         if (v.is_extrusion()) {
@@ -1785,6 +1805,8 @@ void ViewerImpl::update_color_ranges()
             }
             m_fan_speed_range.update(round_to_bin(v.fan_speed));
             m_temperature_range.update(round_to_bin(v.temperature));
+            m_tool_dock_time_range.update(v.tool_dock_times[time_mode_idx]);
+            m_tool_print_time_range.update(v.tool_print_times[time_mode_idx]);
         }
         if ((v.is_travel() && m_settings.options_visibility[size_t(EOptionType::Travels)]) ||
             (v.is_wipe() && m_settings.options_visibility[size_t(EOptionType::Wipes)]) ||

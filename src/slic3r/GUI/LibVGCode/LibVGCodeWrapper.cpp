@@ -192,6 +192,65 @@ GCodeInputData convert(const Slic3r::GCodeProcessorResult& result, const std::ve
     }
 
     const std::vector<Slic3r::GCodeProcessorResult::MoveVertex>& moves = result.moves;
+
+    // Pre-compute per-move tool dock/print times.
+    // A "tool session" is a maximal range of consecutive moves with the same extruder_id.
+    // For every move belonging to a session we expose:
+    //   - tool_print_times = total duration of that session (per time mode)
+    //   - tool_dock_times  = elapsed time the tool spent parked since the end of its previous session
+    //                        (zero for each tool's first session)
+    constexpr size_t TM_COUNT = TIME_MODES_COUNT;
+    std::vector<std::array<float, TM_COUNT>> per_move_dock(moves.size(), { 0.0f, 0.0f });
+    std::vector<std::array<float, TM_COUNT>> per_move_print(moves.size(), { 0.0f, 0.0f });
+    if (!moves.empty()) {
+        // cumulative time at end of each move
+        std::vector<std::array<float, TM_COUNT>> cum(moves.size(), { 0.0f, 0.0f });
+        std::array<float, TM_COUNT> running = { 0.0f, 0.0f };
+        for (size_t i = 0; i < moves.size(); ++i) {
+            for (size_t m = 0; m < TM_COUNT; ++m) {
+                running[m] += moves[i].time[m];
+                cum[i][m] = running[m];
+            }
+        }
+
+        // Build sessions: [start, end] move indices with constant extruder_id.
+        struct Session { size_t start; size_t end; unsigned char extruder_id; };
+        std::vector<Session> sessions;
+        size_t s_start = 0;
+        for (size_t i = 1; i < moves.size(); ++i) {
+            if (moves[i].extruder_id != moves[s_start].extruder_id) {
+                sessions.push_back({ s_start, i - 1, moves[s_start].extruder_id });
+                s_start = i;
+            }
+        }
+        sessions.push_back({ s_start, moves.size() - 1, moves[s_start].extruder_id });
+
+        // Per-tool last-session end time (cumulative).
+        std::map<unsigned char, std::array<float, TM_COUNT>> last_end;
+        for (const Session& s : sessions) {
+            std::array<float, TM_COUNT> start_time;
+            for (size_t m = 0; m < TM_COUNT; ++m)
+                start_time[m] = (s.start == 0) ? 0.0f : cum[s.start - 1][m];
+
+            std::array<float, TM_COUNT> print_time;
+            for (size_t m = 0; m < TM_COUNT; ++m)
+                print_time[m] = cum[s.end][m] - start_time[m];
+
+            std::array<float, TM_COUNT> dock_time = { 0.0f, 0.0f };
+            auto it = last_end.find(s.extruder_id);
+            if (it != last_end.end()) {
+                for (size_t m = 0; m < TM_COUNT; ++m)
+                    dock_time[m] = std::max(0.0f, start_time[m] - it->second[m]);
+            }
+
+            for (size_t i = s.start; i <= s.end; ++i) {
+                per_move_dock[i]  = dock_time;
+                per_move_print[i] = print_time;
+            }
+            last_end[s.extruder_id] = cum[s.end];
+        }
+    }
+
     ret.vertices.reserve(2 * moves.size());
     for (size_t i = 1; i < moves.size(); ++i) {
         const Slic3r::GCodeProcessorResult::MoveVertex& curr = moves[i];
@@ -207,12 +266,14 @@ GCodeInputData convert(const Slic3r::GCodeProcessorResult& result, const std::ve
                 const libvgcode::PathVertex vertex = { convert(prev.position), curr.height, curr.width, curr.feedrate, prev.actual_feedrate,
                     curr.mm3_per_mm, curr.fan_speed, curr.temperature, 0.0f, convert(curr.extrusion_role), curr_type,
                     static_cast<uint32_t>(curr.gcode_id), static_cast<uint32_t>(curr.layer_id),
-                    static_cast<uint8_t>(curr.extruder_id), static_cast<uint8_t>(curr.cp_color_id), { 0.0f, 0.0f } };
+                    static_cast<uint8_t>(curr.extruder_id), static_cast<uint8_t>(curr.cp_color_id), { 0.0f, 0.0f },
+                    per_move_dock[i], per_move_print[i] };
 #else
               const libvgcode::PathVertex vertex = { convert(prev.position), curr.height, curr.width, curr.feedrate, prev.actual_feedrate,
                     curr.mm3_per_mm, curr.fan_speed, curr.temperature, convert(curr.extrusion_role), curr_type,
                     static_cast<uint32_t>(curr.gcode_id), static_cast<uint32_t>(curr.layer_id),
-                    static_cast<uint8_t>(curr.extruder_id), static_cast<uint8_t>(curr.cp_color_id), { 0.0f, 0.0f } };
+                    static_cast<uint8_t>(curr.extruder_id), static_cast<uint8_t>(curr.cp_color_id), { 0.0f, 0.0f },
+                    per_move_dock[i], per_move_print[i] };
 #endif // VGCODE_ENABLE_COG_AND_TOOL_MARKERS
                 ret.vertices.emplace_back(vertex);
             }
@@ -223,12 +284,14 @@ GCodeInputData convert(const Slic3r::GCodeProcessorResult& result, const std::ve
             curr.mm3_per_mm, curr.fan_speed, curr.temperature,
             result.filament_densities[curr.extruder_id] * curr.mm3_per_mm * (curr.position - prev.position).norm(),
             convert(curr.extrusion_role), curr_type, static_cast<uint32_t>(curr.gcode_id), static_cast<uint32_t>(curr.layer_id),
-            static_cast<uint8_t>(curr.extruder_id), static_cast<uint8_t>(curr.cp_color_id), curr.time };
+            static_cast<uint8_t>(curr.extruder_id), static_cast<uint8_t>(curr.cp_color_id), curr.time,
+            per_move_dock[i], per_move_print[i] };
 #else
         const libvgcode::PathVertex vertex = { convert(curr.position), curr.height, curr.width, curr.feedrate, curr.actual_feedrate,
             curr.mm3_per_mm, curr.fan_speed, curr.temperature, convert(curr.extrusion_role), curr_type,
             static_cast<uint32_t>(curr.gcode_id), static_cast<uint32_t>(curr.layer_id),
-            static_cast<uint8_t>(curr.extruder_id), static_cast<uint8_t>(curr.cp_color_id), curr.time };
+            static_cast<uint8_t>(curr.extruder_id), static_cast<uint8_t>(curr.cp_color_id), curr.time,
+            per_move_dock[i], per_move_print[i] };
 #endif // VGCODE_ENABLE_COG_AND_TOOL_MARKERS
         ret.vertices.emplace_back(vertex);
     }

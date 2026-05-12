@@ -552,6 +552,14 @@ void GCodeViewer::SequentialView::Marker::render_position_window(const libvgcode
                     const std::string text = std::string(buff);
                     ImGuiPureWrap::text(text);
                 });
+                append_table_row(_u8L("Tool dock time"), [viewer, &vertex]() {
+                    const float t = vertex.tool_dock_times[static_cast<size_t>(viewer->get_time_mode())];
+                    ImGuiPureWrap::text(get_time_dhms(t));
+                });
+                append_table_row(_u8L("Tool print time"), [viewer, &vertex]() {
+                    const float t = vertex.tool_print_times[static_cast<size_t>(viewer->get_time_mode())];
+                    ImGuiPureWrap::text(get_time_dhms(t));
+                });
 
                 ImGui::EndTable();
             }
@@ -2444,10 +2452,11 @@ void GCodeViewer::render_legend(float& legend_height)
     std::vector<std::string> view_options;
     std::vector<int> view_options_id;
     const std::vector<float> layers_times = get_layers_times();
+    const bool multi_tool = m_viewer.get_used_extruders_count() > 1;
     if (!layers_times.empty() && layers_times.size() == m_viewer.get_layers_count()) {
         view_options = { _u8L("Feature type"), _u8L("Height (mm)"), _u8L("Width (mm)"), _u8L("Speed (mm/s)"), _u8L("Actual speed (mm/s)"),
                          _u8L("Fan speed (%)"), _u8L("Temperature (°C)"), _u8L("Volumetric flow rate (mm³/s)"), _u8L("Actual volumetric flow rate (mm³/s)"),
-                         _u8L("Layer time (linear)"), _u8L("Layer time (logarithmic)"), _u8L("Tool"), _u8L("Color Print") };
+                         _u8L("Layer time (linear)"), _u8L("Layer time (logarithmic)") };
         view_options_id = { static_cast<int>(libvgcode::EViewType::FeatureType),
                             static_cast<int>(libvgcode::EViewType::Height),
                             static_cast<int>(libvgcode::EViewType::Width),
@@ -2458,14 +2467,21 @@ void GCodeViewer::render_legend(float& legend_height)
                             static_cast<int>(libvgcode::EViewType::VolumetricFlowRate),
                             static_cast<int>(libvgcode::EViewType::ActualVolumetricFlowRate),
                             static_cast<int>(libvgcode::EViewType::LayerTimeLinear),
-                            static_cast<int>(libvgcode::EViewType::LayerTimeLogarithmic),
-                            static_cast<int>(libvgcode::EViewType::Tool),
-                            static_cast<int>(libvgcode::EViewType::ColorPrint) };
+                            static_cast<int>(libvgcode::EViewType::LayerTimeLogarithmic) };
+        if (multi_tool) {
+            view_options.push_back(_u8L("Tool dock time"));
+            view_options.push_back(_u8L("Tool print time"));
+            view_options_id.push_back(static_cast<int>(libvgcode::EViewType::ToolDockTime));
+            view_options_id.push_back(static_cast<int>(libvgcode::EViewType::ToolPrintTime));
+        }
+        view_options.push_back(_u8L("Tool"));
+        view_options.push_back(_u8L("Color Print"));
+        view_options_id.push_back(static_cast<int>(libvgcode::EViewType::Tool));
+        view_options_id.push_back(static_cast<int>(libvgcode::EViewType::ColorPrint));
     }
     else {
         view_options = { _u8L("Feature type"), _u8L("Height (mm)"), _u8L("Width (mm)"), _u8L("Speed (mm/s)"), _u8L("Actual speed (mm/s)"),
-                         _u8L("Fan speed (%)"), _u8L("Temperature (°C)"), _u8L("Volumetric flow rate (mm³/s)"), _u8L("Actual volumetric flow rate (mm³/s)"),
-                         _u8L("Tool"), _u8L("Color Print") };
+                         _u8L("Fan speed (%)"), _u8L("Temperature (°C)"), _u8L("Volumetric flow rate (mm³/s)"), _u8L("Actual volumetric flow rate (mm³/s)") };
         view_options_id = { static_cast<int>(libvgcode::EViewType::FeatureType),
                             static_cast<int>(libvgcode::EViewType::Height),
                             static_cast<int>(libvgcode::EViewType::Width),
@@ -2474,13 +2490,24 @@ void GCodeViewer::render_legend(float& legend_height)
                             static_cast<int>(libvgcode::EViewType::FanSpeed),
                             static_cast<int>(libvgcode::EViewType::Temperature),
                             static_cast<int>(libvgcode::EViewType::VolumetricFlowRate),
-                            static_cast<int>(libvgcode::EViewType::ActualVolumetricFlowRate),
-                            static_cast<int>(libvgcode::EViewType::Tool),
-                            static_cast<int>(libvgcode::EViewType::ColorPrint) };
+                            static_cast<int>(libvgcode::EViewType::ActualVolumetricFlowRate) };
+        if (multi_tool) {
+            view_options.push_back(_u8L("Tool dock time"));
+            view_options.push_back(_u8L("Tool print time"));
+            view_options_id.push_back(static_cast<int>(libvgcode::EViewType::ToolDockTime));
+            view_options_id.push_back(static_cast<int>(libvgcode::EViewType::ToolPrintTime));
+        }
+        view_options.push_back(_u8L("Tool"));
+        view_options.push_back(_u8L("Color Print"));
+        view_options_id.push_back(static_cast<int>(libvgcode::EViewType::Tool));
+        view_options_id.push_back(static_cast<int>(libvgcode::EViewType::ColorPrint));
         if (new_view_type_i == static_cast<int>(libvgcode::EViewType::LayerTimeLinear) ||
             new_view_type_i == static_cast<int>(libvgcode::EViewType::LayerTimeLogarithmic))
             new_view_type_i = 0;
     }
+    if (!multi_tool && (new_view_type_i == static_cast<int>(libvgcode::EViewType::ToolDockTime) ||
+                        new_view_type_i == static_cast<int>(libvgcode::EViewType::ToolPrintTime)))
+        new_view_type_i = 0;
     auto new_view_type_it = std::find(view_options_id.begin(), view_options_id.end(), new_view_type_i);
     int new_view_type_id = (new_view_type_it == view_options_id.end()) ? 0 : std::distance(view_options_id.begin(), new_view_type_it);
     if (ImGuiPureWrap::combo(std::string(), view_options, new_view_type_id, ImGuiComboFlags_HeightLargest, 0.0f, -1.0f))
@@ -2545,6 +2572,8 @@ void GCodeViewer::render_legend(float& legend_height)
         case libvgcode::EViewType::ActualVolumetricFlowRate: { append_range(m_viewer.get_color_range(libvgcode::EViewType::ActualVolumetricFlowRate), 3); break; }
         case libvgcode::EViewType::LayerTimeLinear:          { append_time_range(m_viewer.get_color_range(libvgcode::EViewType::LayerTimeLinear)); break; }
         case libvgcode::EViewType::LayerTimeLogarithmic:     { append_time_range(m_viewer.get_color_range(libvgcode::EViewType::LayerTimeLogarithmic)); break; }
+        case libvgcode::EViewType::ToolDockTime:             { append_time_range(m_viewer.get_color_range(libvgcode::EViewType::ToolDockTime)); break; }
+        case libvgcode::EViewType::ToolPrintTime:            { append_time_range(m_viewer.get_color_range(libvgcode::EViewType::ToolPrintTime)); break; }
         case libvgcode::EViewType::Tool: {
             // shows only extruders actually used
             const std::vector<uint8_t>& used_extruders_ids = m_viewer.get_used_extruders_ids();

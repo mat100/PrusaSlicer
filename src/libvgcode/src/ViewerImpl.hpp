@@ -290,6 +290,8 @@ private:
     std::array<ColorRange, COLOR_RANGE_TYPES_COUNT> m_layer_time_range{
         ColorRange(EColorRangeType::Linear), ColorRange(EColorRangeType::Logarithmic)
     };
+    ColorRange m_tool_dock_time_range{ EColorRangeType::Linear };
+    ColorRange m_tool_print_time_range{ EColorRangeType::Linear };
     Palette m_tool_colors;
     Palette m_color_print_colors;
     //

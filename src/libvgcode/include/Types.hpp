@@ -90,6 +90,8 @@ enum class EViewType : uint8_t
     ActualVolumetricFlowRate,
     LayerTimeLinear,
     LayerTimeLogarithmic,
+    ToolDockTime,
+    ToolPrintTime,
     Tool,
     ColorPrint,
     COUNT

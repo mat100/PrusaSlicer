@@ -82,6 +82,16 @@ struct PathVertex
     // Segment estimated times
     //
     std::array<float, TIME_MODES_COUNT> times{ 0.0f, 0.0f };
+    //
+    // Duration the active tool spent parked in the dock right before the
+    // current print session started. Shared by all vertices in the session.
+    //
+    std::array<float, TIME_MODES_COUNT> tool_dock_times{ 0.0f, 0.0f };
+    //
+    // Duration of the current print session for the active tool.
+    // Shared by all vertices in the session.
+    //
+    std::array<float, TIME_MODES_COUNT> tool_print_times{ 0.0f, 0.0f };
 
     //
     // Return true if the segment is an extrusion move
