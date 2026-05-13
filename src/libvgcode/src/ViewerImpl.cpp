@@ -20,6 +20,10 @@
 
 namespace libvgcode {
 
+// Upper bound for tool dock/print time color mapping (seconds). Anything longer
+// is rendered with the top-of-palette color.
+static constexpr float TOOL_SESSION_TIME_CLAMP_S = 300.0f;
+
 template<class T, class O = T>
 using IntegerOnly = std::enable_if_t<std::is_integral<T>::value, O>;
 
@@ -1496,13 +1500,17 @@ Color ViewerImpl::get_vertex_color(const PathVertex& v) const
     }
     case EViewType::ToolDockTime:
     {
+        // Clamp at 5 min so the useful 0–300 s window keeps full color contrast
+        // and everything longer collapses into the top-of-palette color.
         return v.is_travel() ? get_option_color(move_type_to_option(v.type)) :
-            m_tool_dock_time_range.get_color_at(v.tool_dock_times[static_cast<size_t>(m_settings.time_mode)]);
+            m_tool_dock_time_range.get_color_at(std::min(TOOL_SESSION_TIME_CLAMP_S,
+                v.tool_dock_times[static_cast<size_t>(m_settings.time_mode)]));
     }
     case EViewType::ToolPrintTime:
     {
         return v.is_travel() ? get_option_color(move_type_to_option(v.type)) :
-            m_tool_print_time_range.get_color_at(v.tool_print_times[static_cast<size_t>(m_settings.time_mode)]);
+            m_tool_print_time_range.get_color_at(std::min(TOOL_SESSION_TIME_CLAMP_S,
+                v.tool_print_times[static_cast<size_t>(m_settings.time_mode)]));
     }
     case EViewType::Tool:
     {
@@ -1805,8 +1813,8 @@ void ViewerImpl::update_color_ranges()
             }
             m_fan_speed_range.update(round_to_bin(v.fan_speed));
             m_temperature_range.update(round_to_bin(v.temperature));
-            m_tool_dock_time_range.update(v.tool_dock_times[time_mode_idx]);
-            m_tool_print_time_range.update(v.tool_print_times[time_mode_idx]);
+            m_tool_dock_time_range.update(std::min(TOOL_SESSION_TIME_CLAMP_S, v.tool_dock_times[time_mode_idx]));
+            m_tool_print_time_range.update(std::min(TOOL_SESSION_TIME_CLAMP_S, v.tool_print_times[time_mode_idx]));
         }
         if ((v.is_travel() && m_settings.options_visibility[size_t(EOptionType::Travels)]) ||
             (v.is_wipe() && m_settings.options_visibility[size_t(EOptionType::Wipes)]) ||
