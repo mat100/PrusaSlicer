@@ -27,9 +27,10 @@ static const std::string EXTRUDE_SET_SPEED_TAG = ";_EXTRUDE_SET_SPEED";
 static const std::string EXTERNAL_PERIMETER_TAG = ";_EXTERNAL_PERIMETER";
 static const std::string INTERNAL_PERIMETER_TAG = ";_INTERNAL_PERIMETER";
 
-// Maximum segment length to split a long segment if the initial and the final flow rate differ.
+// Default maximum segment length to split a long segment if the initial and the final flow rate differ.
 // Smaller value means a smoother transition between two different flow rates.
-static constexpr float max_segment_length = 5.f;
+// Used when max_volumetric_extrusion_rate_slope_segment_length is 0 (= use built-in default).
+static constexpr float default_max_segment_length = 5.f;
 
 // For how many GCode lines back will adjust a flow rate from the latest line.
 // Bigger values affect the GCode export speed a lot, and smaller values could
@@ -74,6 +75,10 @@ PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config) : m_use_
     m_max_volumetric_extrusion_rate_slope_positive = float(config.max_volumetric_extrusion_rate_slope_positive.value) * 60.f * 60.f;
     m_max_volumetric_extrusion_rate_slope_negative = float(config.max_volumetric_extrusion_rate_slope_negative.value) * 60.f * 60.f;
 
+    m_max_segment_length = float(config.max_volumetric_extrusion_rate_slope_segment_length.value);
+    if (m_max_segment_length <= 0.f)
+        m_max_segment_length = default_max_segment_length;
+
     for (ExtrusionRateSlope &extrusion_rate_slope : m_max_volumetric_extrusion_rate_slopes) {
         extrusion_rate_slope.negative = m_max_volumetric_extrusion_rate_slope_negative;
         extrusion_rate_slope.positive = m_max_volumetric_extrusion_rate_slope_positive;
@@ -84,6 +89,15 @@ PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config) : m_use_
         m_max_volumetric_extrusion_rate_slopes[size_t(er)].negative = 0;
         m_max_volumetric_extrusion_rate_slopes[size_t(er)].positive = 0;
     }
+
+    // Optionally restrict smoothing to the external-surface perimeter family. We must NOT zero the
+    // per-role slopes here: adjust_volumetric_rate skips any role whose slope is zero, which breaks
+    // the propagation of a slow rate across roles (External -> Overhang -> External). The slow rate
+    // would then never reach the fast segment leaving an overhang, so the flow ramp-up - the exact
+    // case this targets - would be lost (this is why the feature only worked with the toggle off).
+    // Instead keep the full slope math and only suppress the feedrate rewrite for non-external roles
+    // at output time (see output_gcode_line).
+    m_external_perimeter_only_smoothing = config.extrusion_rate_smoothing_external_perimeter_only.value;
 
     opened_extrude_set_speed_block = false;
 
@@ -531,7 +545,12 @@ void PressureEqualizer::GCodeLine::update_end_position(const float *position_sta
 void PressureEqualizer::output_gcode_line(const size_t line_idx)
 {
     GCodeLine &line = m_gcode_lines[line_idx];
-    if (!line.modified) {
+    // In external-perimeter-only mode the slope was still propagated across all roles, but only
+    // external-surface perimeter lines may have their feedrate rewritten - emit everything else as-is.
+    const bool suppress_rewrite = m_external_perimeter_only_smoothing &&
+                                  line.extrusion_role != GCodeExtrusionRole::ExternalPerimeter &&
+                                  line.extrusion_role != GCodeExtrusionRole::OverhangPerimeter;
+    if (!line.modified || suppress_rewrite) {
         push_to_output(line.raw.data(), line.raw_length, true);
         return;
     }
@@ -551,7 +570,7 @@ void PressureEqualizer::output_gcode_line(const size_t line_idx)
     if (std::abs(feedrate_avg - line.pos_end[4]) <= min_emitted_feedrate_change) {
         // The average feedrate is close to the original feedrate, so we emit the line with the original feedrate.
         push_line_to_output(line_idx, line.pos_end[4], comment);
-    } else if (auto nSegments = size_t(ceil(l / max_segment_length)); nSegments == 1) { // Just update this segment.
+    } else if (auto nSegments = size_t(ceil(l / m_max_segment_length)); nSegments == 1) { // Just update this segment.
         push_line_to_output(line_idx, line.feedrate() * line.volumetric_correction_avg(), comment);
     } else {
         bool accelerating = line.volumetric_extrusion_rate_start < line.volumetric_extrusion_rate_end;
@@ -574,11 +593,11 @@ void PressureEqualizer::output_gcode_line(const size_t line_idx)
             // One may achieve higher print speeds if part of the segment is not speed limited.
             l_acc    = t_acc * feedrate_avg;
             l_steady = l - l_acc;
-            if (l_steady < 0.5f * max_segment_length) {
+            if (l_steady < 0.5f * m_max_segment_length) {
                 l_acc    = l;
                 l_steady = 0.f;
             } else
-                nSegments = size_t(ceil(l_acc / max_segment_length));
+                nSegments = size_t(ceil(l_acc / m_max_segment_length));
         }
 
         float pos_start[5];

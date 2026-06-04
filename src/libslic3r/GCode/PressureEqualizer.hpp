@@ -80,6 +80,12 @@ private:
     ExtrusionRateSlope              m_max_volumetric_extrusion_rate_slopes[size_t(GCodeExtrusionRole::Count)];
     float                           m_max_volumetric_extrusion_rate_slope_positive;
     float                           m_max_volumetric_extrusion_rate_slope_negative;
+    // Maximum length [mm] of a sub-segment when splitting a long extrusion for a smooth feedrate ramp.
+    float                           m_max_segment_length;
+    // When set, the volumetric rate slope is still computed and propagated across all roles
+    // (so e.g. the flow ramp out of an overhang slowdown is preserved), but only external-surface
+    // perimeter lines (ExternalPerimeter / OverhangPerimeter) actually get their feedrate rewritten.
+    bool                            m_external_perimeter_only_smoothing;
 
     // Configuration extracted from config.
     // Area of the crossestion of each filament. Necessary to calculate the volumetric flow rate.

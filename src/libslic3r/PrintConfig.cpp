@@ -2394,6 +2394,28 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionFloat(0));
 
+    def = this->add("max_volumetric_extrusion_rate_slope_segment_length", coFloat);
+    def->label = L("Smoothing segment length");
+    def->tooltip = L("Maximum length of a G-code segment used when the pressure equalizer ramps "
+                     "between two different volumetric flow rates. Long extrusion segments are split "
+                     "into pieces no longer than this value, producing a smoother feedrate transition. "
+                     "Smaller values give finer transitions at the cost of more G-code lines. "
+                     "A value of 0 falls back to the built-in default (5 mm).");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("extrusion_rate_smoothing_external_perimeter_only", coBool);
+    def->label = L("Smooth external perimeters only");
+    def->tooltip = L("When enabled, the pressure equalizer limits the volumetric flow rate slope only "
+                     "on external perimeters, including their overhanging segments. All other extrusion "
+                     "roles are emitted with their unmodified feedrates. Useful to improve external surface "
+                     "quality (e.g. smoothing the flow ramp out of overhang slowdowns) without paying the "
+                     "print-time cost of ramping every extrusion.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("min_fan_speed", coInts);
     def->label = L("Min");
     def->tooltip = L("This setting represents the minimum PWM your fan needs to work.");
