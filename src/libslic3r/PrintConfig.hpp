@@ -808,6 +808,10 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloats,               machine_min_travel_rate))
     // M205 S... [mm/sec]
     ((ConfigOptionFloats,               machine_min_extruding_rate))
+    // Forbidden external (and first internal) perimeter feedrate range [mm/s] for resonance avoidance.
+    // Both zero disables the feature.
+    ((ConfigOptionFloat,                external_perimeter_forbidden_speed_min))
+    ((ConfigOptionFloat,                external_perimeter_forbidden_speed_max))
 )
 
 PRINT_CONFIG_CLASS_DEFINE(

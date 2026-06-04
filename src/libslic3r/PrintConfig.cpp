@@ -2275,6 +2275,30 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloats{ 0., 0. });
 
+    def = this->add("external_perimeter_forbidden_speed_min", coFloat);
+    def->label = L("Forbidden external perimeter speed - min");
+    def->category = L("Machine limits");
+    def->tooltip = L("If the cooling slowdown would land the external (and first internal) perimeter "
+                     "feedrate inside the forbidden range [min, max] mm/s, the feedrate is clamped "
+                     "down to 'min' (or to min_print_speed, whichever is higher). This avoids printing "
+                     "at speeds where the printer mechanically resonates. Set both min and max to 0 "
+                     "to disable.");
+    def->sidetext = L("mm/s");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("external_perimeter_forbidden_speed_max", coFloat);
+    def->label = L("Forbidden external perimeter speed - max");
+    def->category = L("Machine limits");
+    def->tooltip = L("Upper bound of the forbidden external (and first internal) perimeter feedrate "
+                     "range. If the cooling slowdown brings the feedrate into [min, max] mm/s, it is "
+                     "clamped down below the range. Set both min and max to 0 to disable.");
+    def->sidetext = L("mm/s");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
     // M204 P... [mm/sec^2]
     def = this->add("machine_max_acceleration_extruding", coFloats);
     def->full_label = L("Maximum acceleration when extruding");

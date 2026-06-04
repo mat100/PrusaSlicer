@@ -545,6 +545,7 @@ static std::vector<std::string> s_Preset_machine_limits_options {
     "machine_min_extruding_rate", "machine_min_travel_rate",
     "machine_max_jerk_x", "machine_max_jerk_y", "machine_max_jerk_z", "machine_max_jerk_e",
     "machine_max_junction_deviation",
+    "external_perimeter_forbidden_speed_min", "external_perimeter_forbidden_speed_max",
 };
 
 static std::vector<std::string> s_Preset_printer_options {

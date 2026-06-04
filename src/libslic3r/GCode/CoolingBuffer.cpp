@@ -437,6 +437,12 @@ struct PerExtruderAdjustments
     float                       slowdown_below_layer_time = 0.f;
     // Minimum print speed allowed for this extruder.
     float                       min_print_speed     = 0.f;
+    // Forbidden external/first-internal perimeter feedrate range (mm/s) for resonance avoidance.
+    // When forbidden_speed_min < forbidden_speed_max, any external/first-internal perimeter
+    // feedrate landing inside [forbidden_speed_min, forbidden_speed_max] is clamped down to
+    // forbidden_speed_min. Both zero disables the feature.
+    float                       forbidden_speed_min = 0.f;
+    float                       forbidden_speed_max = 0.f;
 
     // Parsed lines.
     std::vector<CoolingLine>    lines;
@@ -555,6 +561,45 @@ finished:
 	return new_feedrate;
 }
 
+// Post-process pass: after cooling slowdown finishes, clamp any external or first-internal
+// perimeter feedrate that ended up inside the forbidden range [forbidden_speed_min,
+// forbidden_speed_max] (machine-wide setting) to max(forbidden_speed_min, min_print_speed).
+// When min_print_speed sits inside the forbidden band the clamp lands there too — accepted
+// as a deliberate trade-off (don't violate min_print_speed). Returns how much the clamp
+// lengthened the layer, so the caller can pass the corrected total layer time to
+// apply_layer_cooldown's fan logic.
+static float enforce_forbidden_speed_range(std::vector<PerExtruderAdjustments> &per_extruder_adjustments)
+{
+    float layer_time_extra = 0.f;
+    for (PerExtruderAdjustments &adj : per_extruder_adjustments) {
+        if (adj.forbidden_speed_max <= adj.forbidden_speed_min)
+            continue;
+        const float clamped = std::max(adj.forbidden_speed_min, adj.min_print_speed);
+        if (clamped <= 0.f)
+            continue;
+        const float lo = adj.forbidden_speed_min;
+        const float hi = adj.forbidden_speed_max;
+        for (CoolingLine &line : adj.lines) {
+            if (!(line.type & (CoolingLine::TYPE_EXTERNAL_PERIMETER | CoolingLine::TYPE_FIRST_INTERNAL_PERIMETER)))
+                continue;
+            if (line.feedrate > lo && line.feedrate < hi) {
+                if (line.adjustable_length > 0.f)
+                    layer_time_extra += line.adjustable_length * (1.f / clamped - 1.f / line.feedrate);
+                line.feedrate = clamped;
+                // Mark slowdown so apply_layer_cooldown rewrites the F word with the
+                // clamped value instead of preserving the original G-code feedrate.
+                line.slowdown = true;
+            }
+            if (line.feedrate_original > lo && line.feedrate_original < hi) {
+                if (line.non_adjustable_length > 0.f)
+                    layer_time_extra += line.non_adjustable_length * (1.f / clamped - 1.f / line.feedrate_original);
+                line.feedrate_original = clamped;
+            }
+        }
+    }
+    return layer_time_extra;
+}
+
 std::string CoolingBuffer::process_layer(std::string &&gcode, size_t layer_id, bool flush)
 {
     // Cache the input G-code.
@@ -568,8 +613,9 @@ std::string CoolingBuffer::process_layer(std::string &&gcode, size_t layer_id, b
         // This is either an object layer or the very last print layer. Calculate cool down over the collected support layers
         // and one object layer.
         std::vector<PerExtruderAdjustments> per_extruder_adjustments = this->parse_layer_gcode(m_gcode, m_current_pos);
-        float layer_time_stretched = this->calculate_layer_slowdown(per_extruder_adjustments);
-        out = this->apply_layer_cooldown(m_gcode, layer_id, layer_time_stretched, per_extruder_adjustments);
+        float layer_time = this->calculate_layer_slowdown(per_extruder_adjustments);
+        layer_time += enforce_forbidden_speed_range(per_extruder_adjustments);
+        out = this->apply_layer_cooldown(m_gcode, layer_id, layer_time, per_extruder_adjustments);
         m_gcode.clear();
     }
     return out;
@@ -589,6 +635,8 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
         adj.cooling_slowdown_logic    = m_config.cooling_slowdown_logic.get_at(extruder_id);
         adj.slowdown_below_layer_time = float(m_config.slowdown_below_layer_time.get_at(extruder_id));
         adj.min_print_speed           = float(m_config.min_print_speed.get_at(extruder_id));
+        adj.forbidden_speed_min       = float(m_config.external_perimeter_forbidden_speed_min.value);
+        adj.forbidden_speed_max       = float(m_config.external_perimeter_forbidden_speed_max.value);
         map_extruder_to_per_extruder_adjustment[extruder_id] = i;
     }
 

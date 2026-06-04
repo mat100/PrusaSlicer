@@ -3219,6 +3219,10 @@ PageShp TabPrinter::build_kinematics_page()
             append_option_line(optgroup, "machine_min_travel_rate");
         }
 
+    optgroup = page->new_optgroup(L("Forbidden external perimeter speed range (resonance avoidance)"));
+    optgroup->append_single_option_line("external_perimeter_forbidden_speed_min");
+    optgroup->append_single_option_line("external_perimeter_forbidden_speed_max");
+
     return page;
 }
 

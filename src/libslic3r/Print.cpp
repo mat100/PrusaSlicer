@@ -139,6 +139,8 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "max_fan_speed",
         "max_print_height",
         "min_print_speed",
+        "external_perimeter_forbidden_speed_min",
+        "external_perimeter_forbidden_speed_max",
         "max_print_speed",
         "max_volumetric_speed",
         "max_volumetric_extrusion_rate_slope_positive",
