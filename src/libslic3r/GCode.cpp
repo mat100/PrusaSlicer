@@ -2577,7 +2577,8 @@ LayerResult GCodeGenerator::process_layer(
 
     // Retraction tuning tower: override retract_length per layer based on print_z so the user can
     // calibrate retraction in a single print. The Extruder reads retract_length dynamically on each
-    // retraction, so overwriting it here applies to both layer-change and travel retractions of this layer.
+    // retraction from m_writer.config, so we must update that config (the actual emitted length).
+    // m_config is also updated to keep travel_to()'s "needs retraction" decision consistent.
     if (m_config.retraction_tuning.get_at(first_extruder_id)) {
         for (const Extruder &e : m_writer.extruders()) {
             unsigned int id = e.id();
@@ -2588,7 +2589,8 @@ LayerResult GCodeGenerator::process_layer(
             int    step_idx    = step_height > 0 ? int(print_z / step_height) : 0;
             double value       = std::max(0., m_config.retraction_tuning_start.get_at(id)
                                                + step_idx * m_config.retraction_tuning_increment.get_at(id));
-            m_config.retract_length.values[id] = value;
+            m_config.retract_length.values[id]         = value;
+            m_writer.config.retract_length.values[id]  = value;
         }
     }
 
