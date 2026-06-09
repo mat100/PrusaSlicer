@@ -3434,6 +3434,12 @@ void TabPrinter::build_extruder_pages(size_t n_before_extruders)
         optgroup->append_single_option_line("wipe", "", extruder_idx);
         optgroup->append_single_option_line("retract_before_wipe", "", extruder_idx);
 
+        optgroup = page->new_optgroup(L("Retraction tuning tower (calibration)"));
+        optgroup->append_single_option_line("retraction_tuning", "", extruder_idx);
+        optgroup->append_single_option_line("retraction_tuning_start", "", extruder_idx);
+        optgroup->append_single_option_line("retraction_tuning_increment", "", extruder_idx);
+        optgroup->append_single_option_line("retraction_tuning_height", "", extruder_idx);
+
         optgroup = page->new_optgroup(L("Retraction when tool is disabled (advanced settings for multi-extruder setups)"));
         optgroup->append_single_option_line("retract_length_toolchange", "", extruder_idx);
         optgroup->append_single_option_line("retract_restart_extra_toolchange", "", extruder_idx);
@@ -3642,6 +3648,11 @@ void TabPrinter::toggle_options()
         // when using firmware retraction, firmware decides retraction length
         bool use_firmware_retraction = m_config->opt_bool("use_firmware_retraction");
         toggle_option("retract_length", !use_firmware_retraction, i);
+
+        // retraction tuning tower parameters only apply when the tower is enabled
+        const bool retraction_tuning = m_config->opt_bool("retraction_tuning", i);
+        for (auto el : { "retraction_tuning_start", "retraction_tuning_increment", "retraction_tuning_height" })
+            toggle_option(el, retraction_tuning, i);
 
         toggle_option("retract_lift", ! ramping_lift, i);
         toggle_option("travel_max_lift", ramping_lift, i);

@@ -2575,6 +2575,23 @@ LayerResult GCodeGenerator::process_layer(
     // Initialize config with the 1st object to be printed at this layer.
     m_config.apply(layer.object()->config(), true);
 
+    // Retraction tuning tower: override retract_length per layer based on print_z so the user can
+    // calibrate retraction in a single print. The Extruder reads retract_length dynamically on each
+    // retraction, so overwriting it here applies to both layer-change and travel retractions of this layer.
+    if (m_config.retraction_tuning.get_at(first_extruder_id)) {
+        for (const Extruder &e : m_writer.extruders()) {
+            unsigned int id = e.id();
+            if (! m_config.retraction_tuning.get_at(id))
+                continue;
+            double step_height = m_config.retraction_tuning_height.get_at(id);
+            // print_z is always non-negative, so integer truncation equals floor here.
+            int    step_idx    = step_height > 0 ? int(print_z / step_height) : 0;
+            double value       = std::max(0., m_config.retraction_tuning_start.get_at(id)
+                                               + step_idx * m_config.retraction_tuning_increment.get_at(id));
+            m_config.retract_length.values[id] = value;
+        }
+    }
+
     // Check whether it is possible to apply the spiral vase logic for this layer.
     // Just a reminder: A spiral vase mode is allowed for a single object, single material print only.
     m_enable_loop_clipping = true;
@@ -2621,6 +2638,12 @@ LayerResult GCodeGenerator::process_layer(
     gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Layer_Change) + "\n";
     // export layer z
     gcode += std::string(";Z:") + float_to_string_decimal_point(print_z) + "\n";
+
+    // export the retraction length used by the retraction tuning tower so the user can map the best
+    // looking height band back to a concrete retraction length.
+    if (m_config.retraction_tuning.get_at(first_extruder_id))
+        gcode += "; RETRACTION_TUNING z=" + float_to_string_decimal_point(print_z)
+               + " retract_length=" + float_to_string_decimal_point(m_config.retract_length.get_at(first_extruder_id)) + "\n";
 
     // export layer height
     gcode += std::string(";") + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Height)

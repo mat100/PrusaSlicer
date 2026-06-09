@@ -2728,6 +2728,42 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm (zero to disable)");
     def->set_default_value(new ConfigOptionFloats { 2. });
 
+    def = this->add("retraction_tuning", coBools);
+    def->label = L("Retraction tuning tower");
+    def->full_label = L("Retraction tuning tower");
+    def->tooltip = L("Calibration aid: when enabled, the retraction length is automatically increased "
+                   "as the print gets taller, overriding the \"Retraction length\" value layer by layer. "
+                   "Print a simple tall object (e.g. a cube), pick the height band that looks best and "
+                   "read the corresponding retraction length from the \"; RETRACTION_TUNING\" comments in "
+                   "the generated G-code. Note: this does not affect Firmware retraction.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBools { false });
+
+    def = this->add("retraction_tuning_start", coFloats);
+    def->label = L("Starting retraction length");
+    def->tooltip = L("Retraction length used in the lowest zone of the retraction tuning tower.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloats { 0. });
+
+    def = this->add("retraction_tuning_increment", coFloats);
+    def->label = L("Retraction length increment");
+    def->tooltip = L("How much the retraction length is increased on each step of the retraction tuning tower.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloats { 0.2 });
+
+    def = this->add("retraction_tuning_height", coFloats);
+    def->label = L("Step height");
+    def->tooltip = L("Height of one step of the retraction tuning tower. The retraction length is increased "
+                   "by the configured increment after each step.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloats { 5. });
+
     def = this->add("retract_length_toolchange", coFloats);
     def->label = L("Length");
     def->full_label = L("Retraction Length (Toolchange)");
@@ -4058,6 +4094,7 @@ void PrintConfigDef::init_extruder_option_keys()
         "nozzle_diameter", "min_layer_height", "max_layer_height", "extruder_offset",
         "retract_length", "retract_lift", "retract_lift_above", "retract_lift_below", "retract_speed", "deretract_speed",
         "retract_before_wipe", "retract_restart_extra", "retract_before_travel", "wipe",
+        "retraction_tuning", "retraction_tuning_start", "retraction_tuning_increment", "retraction_tuning_height",
         "travel_slope", "travel_max_lift", "travel_ramping_lift", "travel_lift_before_obstacle",
         "retract_layer_change", "retract_length_toolchange", "retract_restart_extra_toolchange", "extruder_colour",
         "default_filament_profile", "nozzle_high_flow"
