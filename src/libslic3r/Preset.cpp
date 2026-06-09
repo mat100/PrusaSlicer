@@ -560,7 +560,8 @@ static std::vector<std::string> s_Preset_printer_options {
     "max_print_height", "default_print_profile", "inherits",
     "remaining_times", "silent_mode",
     "machine_limits_usage", "thumbnails", "thumbnails_format",
-    "nozzle_high_flow", "extruder_clearance_radius", "extruder_clearance_height"
+    "nozzle_high_flow", "extruder_clearance_radius", "extruder_clearance_height",
+    "tuning_tower", "tuning_tower_parameter", "tuning_tower_start", "tuning_tower_increment", "tuning_tower_step_height"
 };
 
 static std::vector<std::string> s_Preset_sla_print_options {

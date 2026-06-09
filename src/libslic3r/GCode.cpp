@@ -2523,6 +2523,22 @@ std::vector<GCode::ExtrusionOrder::ExtruderExtrusions> GCodeGenerator::get_sorte
 }
 
 
+// Maps a tuning tower parameter to the per-extruder config key it overrides. Temperature is handled
+// separately (it is emitted as an M104 command, not read back from the config), so it returns empty.
+static std::string tuning_tower_config_key(TuningTowerParameter param)
+{
+    switch (param) {
+    case TuningTowerParameter::RetractionLength:       return "retract_length";
+    case TuningTowerParameter::RetractionSpeed:        return "retract_speed";
+    case TuningTowerParameter::DeretractionSpeed:      return "deretract_speed";
+    case TuningTowerParameter::RetractionLift:         return "retract_lift";
+    case TuningTowerParameter::RetractionRestartExtra: return "retract_restart_extra";
+    case TuningTowerParameter::RetractionBeforeTravel: return "retract_before_travel";
+    case TuningTowerParameter::Temperature:            return "temperature";
+    }
+    return {};
+}
+
 // In sequential mode, process_layer is called once per each object and its copy,
 // therefore layers will contain a single entry and single_object_instance_idx will point to the copy of the object.
 // In non-sequential mode, process_layer is called per each print_z height with all object and support layers accumulated.
@@ -2575,22 +2591,27 @@ LayerResult GCodeGenerator::process_layer(
     // Initialize config with the 1st object to be printed at this layer.
     m_config.apply(layer.object()->config(), true);
 
-    // Retraction tuning tower: override retract_length per layer based on print_z so the user can
-    // calibrate retraction in a single print. The Extruder reads retract_length dynamically on each
-    // retraction from m_writer.config, so we must update that config (the actual emitted length).
-    // m_config is also updated to keep travel_to()'s "needs retraction" decision consistent.
-    if (m_config.retraction_tuning.get_at(first_extruder_id)) {
-        for (const Extruder &e : m_writer.extruders()) {
-            unsigned int id = e.id();
-            if (! m_config.retraction_tuning.get_at(id))
-                continue;
-            double step_height = m_config.retraction_tuning_height.get_at(id);
-            // print_z is always non-negative, so integer truncation equals floor here.
-            int    step_idx    = step_height > 0 ? int(print_z / step_height) : 0;
-            double value       = std::max(0., m_config.retraction_tuning_start.get_at(id)
-                                               + step_idx * m_config.retraction_tuning_increment.get_at(id));
-            m_config.retract_length.values[id]         = value;
-            m_writer.config.retract_length.values[id]  = value;
+    // Tuning tower calibration: sweep the selected parameter by print Z so the user can calibrate it
+    // in a single print. The value for this layer is computed here and (for float parameters) written
+    // back into the config; the actual emission happens later in this function (header comment for all
+    // parameters, M104 for the temperature tower).
+    const bool   tuning_tower_active = m_config.tuning_tower;
+    double       tuning_tower_value  = 0.;
+    if (tuning_tower_active) {
+        const double step_h = m_config.tuning_tower_step_height;
+        // print_z is always non-negative, so integer truncation equals floor here.
+        const int    idx    = step_h > 0 ? int(print_z / step_h) : 0;
+        tuning_tower_value  = m_config.tuning_tower_start + idx * m_config.tuning_tower_increment;
+        if (m_config.tuning_tower_parameter != TuningTowerParameter::Temperature) {
+            // Per-extruder float keys are read dynamically during G-code emission. Write to BOTH
+            // m_config (read by travel_to()/Travels) and m_writer.config (read by the Extruder).
+            const std::string key = tuning_tower_config_key(m_config.tuning_tower_parameter);
+            const double      v   = std::max(0., tuning_tower_value);
+            for (ConfigBase *cfg : { static_cast<ConfigBase*>(&m_config),
+                                     static_cast<ConfigBase*>(&m_writer.config) })
+                if (auto *opt = dynamic_cast<ConfigOptionFloats*>(cfg->optptr(key)))
+                    for (double &x : opt->values)
+                        x = v;
         }
     }
 
@@ -2641,11 +2662,12 @@ LayerResult GCodeGenerator::process_layer(
     // export layer z
     gcode += std::string(";Z:") + float_to_string_decimal_point(print_z) + "\n";
 
-    // export the retraction length used by the retraction tuning tower so the user can map the best
-    // looking height band back to a concrete retraction length.
-    if (m_config.retraction_tuning.get_at(first_extruder_id))
-        gcode += "; RETRACTION_TUNING z=" + float_to_string_decimal_point(print_z)
-               + " retract_length=" + float_to_string_decimal_point(m_config.retract_length.get_at(first_extruder_id)) + "\n";
+    // export the value used by the tuning tower so the user can map the best looking height band
+    // back to a concrete parameter value.
+    if (tuning_tower_active)
+        gcode += "; TUNING_TOWER z=" + float_to_string_decimal_point(print_z)
+               + " " + tuning_tower_config_key(m_config.tuning_tower_parameter)
+               + "=" + float_to_string_decimal_point(tuning_tower_value) + "\n";
 
     // export layer height
     gcode += std::string(";") + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Height)
@@ -2725,6 +2747,17 @@ LayerResult GCodeGenerator::process_layer(
 
         // Mark the temperature transition from 1st to 2nd layer to be finished.
         m_second_layer_things_done = true;
+    }
+
+    // Temperature tuning tower: emit M104 for this layer's band. Done after the 1st->2nd layer
+    // temperature transition above so it takes precedence, and only when the band value changes
+    // (set_temperature does not cache the nozzle temperature, so this avoids one M104 per layer).
+    if (tuning_tower_active && m_config.tuning_tower_parameter == TuningTowerParameter::Temperature) {
+        const int t = std::max(0, int(tuning_tower_value + 0.5));
+        if (t > 0 && t != m_tuning_tower_last_temperature) {
+            gcode += m_writer.set_temperature(t, false, m_writer.extruder()->id());
+            m_tuning_tower_last_temperature = t;
+        }
     }
 
     if (this->config().avoid_crossing_curled_overhangs) {

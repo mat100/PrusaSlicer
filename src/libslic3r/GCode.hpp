@@ -443,6 +443,10 @@ private:
     float                               m_max_layer_z{ 0.0f };
     float                               m_last_width{ 0.0f };
 
+    // Tuning tower calibration: last nozzle temperature emitted by the temperature tower (-1 = none yet),
+    // so M104 is only re-emitted when the band value changes.
+    int                                 m_tuning_tower_last_temperature{ -1 };
+
     std::optional<Vec3d>                m_previous_layer_last_position;
     std::optional<Vec3d>                m_previous_layer_last_position_before_wipe;
     bool                                m_moved_to_first_layer_point{false};

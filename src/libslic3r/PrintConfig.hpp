@@ -245,6 +245,17 @@ enum class CoolingSlowdownLogicType
     Proportional,
 };
 
+// Parameter swept by the tuning tower calibration feature (see GCodeGenerator::process_layer).
+enum class TuningTowerParameter {
+    RetractionLength,
+    RetractionSpeed,
+    DeretractionSpeed,
+    RetractionLift,
+    RetractionRestartExtra,
+    RetractionBeforeTravel,
+    Temperature,
+};
+
 #define CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(NAME) \
     template<> const t_config_enum_names& ConfigOptionEnum<NAME>::get_enum_names(); \
     template<> const t_config_enum_values& ConfigOptionEnum<NAME>::get_enum_values();
@@ -276,6 +287,7 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PerimeterGeneratorType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(TopOnePerimeterType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(EnsureVerticalShellThickness)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(CoolingSlowdownLogicType)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(TuningTowerParameter)
 
 #undef CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS
 
@@ -876,10 +888,11 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBools,               nozzle_high_flow))
     ((ConfigOptionPercents,            retract_before_wipe))
     ((ConfigOptionFloats,              retract_length))
-    ((ConfigOptionBools,               retraction_tuning))
-    ((ConfigOptionFloats,              retraction_tuning_start))
-    ((ConfigOptionFloats,              retraction_tuning_increment))
-    ((ConfigOptionFloats,              retraction_tuning_height))
+    ((ConfigOptionBool,                tuning_tower))
+    ((ConfigOptionEnum<TuningTowerParameter>, tuning_tower_parameter))
+    ((ConfigOptionFloat,               tuning_tower_start))
+    ((ConfigOptionFloat,               tuning_tower_increment))
+    ((ConfigOptionFloat,               tuning_tower_step_height))
     ((ConfigOptionFloats,              retract_length_toolchange))
     ((ConfigOptionFloats,              retract_lift))
     ((ConfigOptionFloats,              retract_lift_above))

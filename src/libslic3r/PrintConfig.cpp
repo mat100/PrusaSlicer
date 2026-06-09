@@ -328,6 +328,17 @@ static const t_config_enum_values s_keys_map_CoolingSlowdownLogicType {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(CoolingSlowdownLogicType)
 
+static const t_config_enum_values s_keys_map_TuningTowerParameter {
+    { "retraction_length",        int(TuningTowerParameter::RetractionLength)       },
+    { "retraction_speed",         int(TuningTowerParameter::RetractionSpeed)        },
+    { "deretraction_speed",       int(TuningTowerParameter::DeretractionSpeed)      },
+    { "retraction_lift",          int(TuningTowerParameter::RetractionLift)         },
+    { "retraction_restart_extra", int(TuningTowerParameter::RetractionRestartExtra) },
+    { "retraction_before_travel", int(TuningTowerParameter::RetractionBeforeTravel) },
+    { "temperature",              int(TuningTowerParameter::Temperature)            },
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(TuningTowerParameter)
+
 static void assign_printer_technology_to_unknown(t_optiondef_map &options, PrinterTechnology printer_technology)
 {
     for (std::pair<const t_config_option_key, ConfigOptionDef> &kvp : options)
@@ -2728,41 +2739,57 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm (zero to disable)");
     def->set_default_value(new ConfigOptionFloats { 2. });
 
-    def = this->add("retraction_tuning", coBools);
-    def->label = L("Retraction tuning tower");
-    def->full_label = L("Retraction tuning tower");
-    def->tooltip = L("Calibration aid: when enabled, the retraction length is automatically increased "
-                   "as the print gets taller, overriding the \"Retraction length\" value layer by layer. "
-                   "Print a simple tall object (e.g. a cube), pick the height band that looks best and "
-                   "read the corresponding retraction length from the \"; RETRACTION_TUNING\" comments in "
-                   "the generated G-code. Note: this does not affect Firmware retraction.");
+    def = this->add("tuning_tower", coBool);
+    def->label = L("Tuning tower");
+    def->full_label = L("Tuning tower (calibration)");
+    def->tooltip = L("Calibration aid: when enabled, the selected parameter is automatically swept "
+                   "as the print gets taller, changing every \"Step height\" millimetres. Print a simple "
+                   "tall object (e.g. a cube), pick the height band that looks best and read the "
+                   "corresponding value from the \"; TUNING_TOWER\" comments in the generated G-code. "
+                   "Note: retraction length tuning does not affect Firmware retraction. Geometry-related "
+                   "parameters (speed, flow, extrusion width, layer height) cannot be tuned this way - "
+                   "use a Height range modifier on the object instead.");
     def->mode = comExpert;
-    def->set_default_value(new ConfigOptionBools { false });
+    def->set_default_value(new ConfigOptionBool(false));
 
-    def = this->add("retraction_tuning_start", coFloats);
-    def->label = L("Starting retraction length");
-    def->tooltip = L("Retraction length used in the lowest zone of the retraction tuning tower.");
-    def->sidetext = L("mm");
+    def = this->add("tuning_tower_parameter", coEnum);
+    def->label = L("Parameter to tune");
+    def->tooltip = L("Which parameter is swept by the tuning tower.");
+    def->set_enum<TuningTowerParameter>({
+        { "retraction_length",        L("Retraction length") },
+        { "retraction_speed",         L("Retraction speed") },
+        { "deretraction_speed",       L("Deretraction speed") },
+        { "retraction_lift",          L("Retraction lift (Z hop)") },
+        { "retraction_restart_extra", L("Retraction extra length on restart") },
+        { "retraction_before_travel", L("Minimum travel after retraction") },
+        { "temperature",              L("Temperature") }
+    });
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionEnum<TuningTowerParameter>(TuningTowerParameter::RetractionLength));
+
+    def = this->add("tuning_tower_start", coFloat);
+    def->label = L("Starting value");
+    def->tooltip = L("Value of the tuned parameter used in the lowest band of the tuning tower.");
     def->min = 0;
     def->mode = comExpert;
-    def->set_default_value(new ConfigOptionFloats { 0. });
+    def->set_default_value(new ConfigOptionFloat(0.));
 
-    def = this->add("retraction_tuning_increment", coFloats);
-    def->label = L("Retraction length increment");
-    def->tooltip = L("How much the retraction length is increased on each step of the retraction tuning tower.");
-    def->sidetext = L("mm");
-    def->min = 0;
+    def = this->add("tuning_tower_increment", coFloat);
+    def->label = L("Increment per step");
+    def->tooltip = L("How much the tuned parameter changes on each step of the tuning tower. "
+                   "May be negative to sweep downwards (e.g. for a temperature tower).");
     def->mode = comExpert;
-    def->set_default_value(new ConfigOptionFloats { 0.2 });
+    def->set_default_value(new ConfigOptionFloat(0.1));
 
-    def = this->add("retraction_tuning_height", coFloats);
+    def = this->add("tuning_tower_step_height", coFloat);
     def->label = L("Step height");
-    def->tooltip = L("Height of one step of the retraction tuning tower. The retraction length is increased "
-                   "by the configured increment after each step.");
+    def->tooltip = L("Height of one step of the tuning tower. The tuned parameter changes by the "
+                   "configured increment after each step. Make this smaller than the model height "
+                   "so the parameter actually changes over the print.");
     def->sidetext = L("mm");
     def->min = 0;
     def->mode = comExpert;
-    def->set_default_value(new ConfigOptionFloats { 5. });
+    def->set_default_value(new ConfigOptionFloat(5.));
 
     def = this->add("retract_length_toolchange", coFloats);
     def->label = L("Length");
@@ -4094,7 +4121,6 @@ void PrintConfigDef::init_extruder_option_keys()
         "nozzle_diameter", "min_layer_height", "max_layer_height", "extruder_offset",
         "retract_length", "retract_lift", "retract_lift_above", "retract_lift_below", "retract_speed", "deretract_speed",
         "retract_before_wipe", "retract_restart_extra", "retract_before_travel", "wipe",
-        "retraction_tuning", "retraction_tuning_start", "retraction_tuning_increment", "retraction_tuning_height",
         "travel_slope", "travel_max_lift", "travel_ramping_lift", "travel_lift_before_obstacle",
         "retract_layer_change", "retract_length_toolchange", "retract_restart_extra_toolchange", "extruder_colour",
         "default_filament_profile", "nozzle_high_flow"
